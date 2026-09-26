@@ -1,0 +1,13 @@
+{
+  "name": "lofi-study-space",
+  "private": true,
+  "description": "Lo-Fi Study Space: React + Express + PostgreSQL + Socket.IO",
+  "scripts": {
+    "install:all": "npm install --prefix client && npm install --prefix server",
+    "build": "npm install --prefix client --include=dev && npm run build --prefix client && npm install --prefix server --omit=dev",
+    "start": "npm start --prefix server",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client"
+  },
+  "engines": { "node": ">=20.19" }
+}

@@ -1,0 +1,21 @@
+# Optional: lets Render create the web service from this file (Blueprint).
+# You still need to paste your Neon DATABASE_URL when Render asks for it.
+services:
+  - type: web
+    name: lofi-study-space
+    runtime: node
+    plan: free
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_SSL
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
