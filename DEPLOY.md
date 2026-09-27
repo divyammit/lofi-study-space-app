@@ -137,6 +137,27 @@ Common Vercel errors:
 | Can log in, but Study Street stays "Connecting…" | `VITE_SOCKET_URL` missing on Vercel (redeploy after adding it), or `CLIENT_ORIGIN` missing/wrong on Render |
 | Everyone gets "Too many attempts" | Set `TRUST_PROXY=2` on Render |
 
+## Making calls reliable (TURN server, optional but recommended)
+
+Voice and video go directly between browsers. That works on most home and college Wi-Fi, but
+some networks (often mobile data, and some strict firewalls) block direct connections. Then the
+call shows people's names but no sound or video, and the app says it couldn't connect.
+
+The fix is a **TURN server**, which relays the call when a direct connection isn't possible.
+Several companies provide them (for example Metered, Twilio, or Cloudflare). Some have free
+tiers with a monthly limit, but check their current pricing, as it changes.
+
+When you have one, the provider gives you a TURN address, a username and a password (credential).
+Add them on Render → Environment and redeploy:
+
+| Key | Value |
+|---|---|
+| `TURN_URLS` | the TURN address(es), comma-separated, e.g. `turn:relay.example.com:3478,turns:relay.example.com:5349` |
+| `TURN_USERNAME` | the username they give you |
+| `TURN_CREDENTIAL` | the password/credential they give you |
+
+Calls need **https** (browsers only allow microphone and camera on secure sites). Render gives you https automatically.
+
 ## Troubleshooting
 
 | Symptom | Likely fix |
@@ -148,3 +169,6 @@ Common Vercel errors:
 | "Can't reach the server" on first visit | The free instance is waking up; wait and press Try again |
 | Everyone got logged out | `JWT_SECRET` was changed; old login cookies stop working (expected) |
 | Open study rooms vanished | The server restarted or slept; rooms are live-only by design, saved data is unaffected |
+| Call connects but no sound/video for some people | Their network blocks direct calls; add a TURN server (see above) |
+| "Your microphone is blocked" | Click the lock/camera icon in the browser's address bar and allow microphone (and camera) for the site |
+| Screen share button missing | Phones don't support screen sharing in the browser; use a laptop |
