@@ -137,26 +137,61 @@ Common Vercel errors:
 | Can log in, but Study Street stays "Connecting…" | `VITE_SOCKET_URL` missing on Vercel (redeploy after adding it), or `CLIENT_ORIGIN` missing/wrong on Render |
 | Everyone gets "Too many attempts" | Set `TRUST_PROXY=2` on Render |
 
-## Making calls reliable (TURN server, optional but recommended)
+## Making calls reliable (TURN relay, needed for real-world calls)
 
-Voice and video go directly between browsers. That works on most home and college Wi-Fi, but
-some networks (often mobile data, and some strict firewalls) block direct connections. Then the
-call shows people's names but no sound or video, and the app says it couldn't connect.
+**Symptom this fixes:** people can join a call and see each other's names, but nobody hears or sees anyone,
+and the tiles say "Can't connect".
 
-The fix is a **TURN server**, which relays the call when a direct connection isn't possible.
-Several companies provide them (for example Metered, Twilio, or Cloudflare). Some have free
-tiers with a monthly limit, but check their current pricing, as it changes.
+**Why:** audio and video travel directly between browsers. Mobile data and many college/office Wi-Fi
+networks block that direct path. A **TURN relay** carries the call when the direct path is blocked.
+It's a separate service, and you set it up once.
 
-When you have one, the provider gives you a TURN address, a username and a password (credential).
-Add them on Render → Environment and redeploy:
+### Option A: Metered (simplest: copy and paste)
+
+The website's layout may differ slightly from these steps; the idea stays the same.
+
+1. Go to **metered.ca**, sign up, and open the **TURN Server** section of the dashboard.
+   Choose the free plan (it has a monthly data limit; check their current limits).
+2. Create a TURN credential if it asks you to.
+3. The dashboard shows a code example containing `iceServers: [ ... ]` with lines like
+   `urls: "turn:....relay.metered.ca:80"`, a `username` and a `credential`.
+   **Copy that whole code example.** You don't need to edit it.
+4. On **Render**, open your service, then **Environment → Add Environment Variable**:
+   - Key: `ICE_SERVERS_JSON`
+   - Value: paste what you copied
+5. Click **Save Changes**. Render redeploys by itself in a few minutes.
+6. Check it worked: in Render's **Logs** you should see
+   `[rtc] TURN relay configured: calls will also work on strict networks.`
+
+The app accepts the code example as-is: strict JSON, a JavaScript snippet, or just the `[...]` list.
+
+### Option B: Cloudflare
+
+Cloudflare's Realtime/TURN service has, as far as I know, a generous free allowance (check current terms).
+In the Cloudflare dashboard, create a **TURN key**; it gives you a **Key ID** and an **API token**.
+Add them on Render as:
+
+| Key | Value |
+|---|---|
+| `CLOUDFLARE_TURN_KEY_ID` | the Key ID |
+| `CLOUDFLARE_TURN_API_TOKEN` | the API token |
+
+The server then fetches fresh, short-lived relay credentials automatically.
+
+### Option C: any other TURN provider
 
 | Key | Value |
 |---|---|
 | `TURN_URLS` | the TURN address(es), comma-separated, e.g. `turn:relay.example.com:3478,turns:relay.example.com:5349` |
-| `TURN_USERNAME` | the username they give you |
-| `TURN_CREDENTIAL` | the password/credential they give you |
+| `TURN_USERNAME` | username |
+| `TURN_CREDENTIAL` | password / credential |
 
-Calls need **https** (browsers only allow microphone and camera on secure sites). Render gives you https automatically.
+### How much data does the relay use?
+Only calls that can't connect directly use it. Roughly: a voice call uses a few tens of MB per person per hour;
+video uses several hundred MB per person per hour. These are rough estimates. For a class project, a free tier
+is usually plenty, but keep an eye on the provider's usage page.
+
+Calls also need **https** (browsers only allow microphone and camera on secure sites). Render gives you https automatically.
 
 ## Troubleshooting
 
@@ -169,6 +204,7 @@ Calls need **https** (browsers only allow microphone and camera on secure sites)
 | "Can't reach the server" on first visit | The free instance is waking up; wait and press Try again |
 | Everyone got logged out | `JWT_SECRET` was changed; old login cookies stop working (expected) |
 | Open study rooms vanished | The server restarted or slept; rooms are live-only by design, saved data is unaffected |
-| Call connects but no sound/video for some people | Their network blocks direct calls; add a TURN server (see above) |
+| Call connects but no sound/video, tiles say "Can't connect" | A network blocks direct calls; add a TURN relay (see "Making calls reliable") |
+| Tile says "Tap to hear …" | The browser blocked sound until you click; tap the tile once |
 | "Your microphone is blocked" | Click the lock/camera icon in the browser's address bar and allow microphone (and camera) for the site |
 | Screen share button missing | Phones don't support screen sharing in the browser; use a laptop |

@@ -102,6 +102,18 @@ export interface StudyRoom {
   subject: string
   startedAt: number
   members: RoomMember[]
+  call: CallSummary | null
+}
+
+export interface RoomMessage {
+  id: string
+  roomId: string
+  userId: string | null
+  name: string
+  avatar: number
+  kind: 'text' | 'image'
+  body: string
+  createdAt: number
 }
 
 export interface Friend {

@@ -91,7 +91,7 @@ export async function listChats(userId, onlyChatId = null) {
     unread: c.unread,
     members: members.filter(m => m.chat_id === c.id).map(({ chat_id: _chatId, ...m }) => m),
     lastMessage: c.lm_id ? { id: c.lm_id, kind: c.lm_kind, userId: c.lm_user, body: c.lm_body, createdAt: c.lm_at } : null,
-    call: realtime.callSummary(c.id),
+    call: realtime.callSummary(`chat:${c.id}`),
   }))
 }
 

@@ -15,8 +15,8 @@ const users = new Map()           // userId -> { id, username, name, avatar }
 const statusByUser = new Map()    // userId -> { mode, running, endsAt, remaining, total, subject }
 const roomOfUser = new Map()      // userId -> roomId
 const rooms = new Map()           // roomId -> { id, hostId, subject, startedAt, members: Set<userId> }
-const calls = new Map()           // chatId -> { chatId, startedAt, video, participants: Map<socketId, P>, board }
-const callOfSocket = new Map()    // socketId -> chatId
+const calls = new Map()           // key ('chat:<id>' or 'room:<id>') -> { key, startedAt, video, participants: Map<socketId, P>, board }
+const callOfSocket = new Map()    // socketId -> call key
 const MAX_CALL = 8                // everyone connects to everyone (mesh), so keep calls small
 const MAX_STROKES = 40000
 
@@ -64,6 +64,7 @@ function listRooms() {
       host: users.get(r.hostId)?.name ?? 'Someone',
       subject: r.subject,
       startedAt: r.startedAt,
+      call: callSummary(`room:${r.id}`),
       members: [...r.members].map(uid => ({
         id: uid,
         name: users.get(uid)?.name ?? 'Someone',
@@ -86,6 +87,7 @@ function broadcastRooms() {
 async function leaveRoom(userId) {
   const roomId = roomOfUser.get(userId)
   if (!roomId) return
+  forEachSocket(userId, s => { if (callOfSocket.get(s.id) === `room:${roomId}`) leaveCall(s).catch(console.error) })
   roomOfUser.delete(userId)
   forEachSocket(userId, s => s.leave(channel(roomId)))
   await q(`DELETE FROM room_members WHERE user_id = $1`, [userId])
@@ -146,7 +148,8 @@ function cleanStatus(s) {
 
 // ---------- chats ----------
 const chatChannel = chatId => `chat:${chatId}`
-const callChannel = chatId => `call:${chatId}`
+const callChannel = key => `call:${key}`
+const CALL_KEY = /^(chat|room):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 async function systemMessage(chatId, text) {
   const r = await q(
@@ -158,8 +161,8 @@ async function systemMessage(chatId, text) {
 }
 
 // ---------- calls ----------
-function callSummary(chatId) {
-  const call = calls.get(chatId)
+function callSummary(key) {
+  const call = calls.get(key)
   if (!call) return null
   return {
     startedAt: call.startedAt,
@@ -177,25 +180,29 @@ function callSummary(chatId) {
   }
 }
 
-function broadcastCall(chatId) {
-  io?.to(chatChannel(chatId)).emit('call:state', { chatId, call: callSummary(chatId) })
+function broadcastCall(key) {
+  // the key is also the Socket.IO channel of everyone in that chat / study room
+  io?.to(key).emit('call:state', { key, call: callSummary(key) })
+  if (key.startsWith('room:')) broadcastRooms() // Study Street shows who's in a call
 }
 
 async function leaveCall(socket) {
-  const chatId = callOfSocket.get(socket.id)
-  if (!chatId) return
+  const key = callOfSocket.get(socket.id)
+  if (!key) return
   callOfSocket.delete(socket.id)
-  socket.leave(callChannel(chatId))
-  const call = calls.get(chatId)
+  socket.leave(callChannel(key))
+  const call = calls.get(key)
   if (!call) return
   call.participants.delete(socket.id)
-  io.to(callChannel(chatId)).emit('call:peer-left', { socketId: socket.id })
+  io.to(callChannel(key)).emit('call:peer-left', { socketId: socket.id })
   if (call.participants.size === 0) {
-    calls.delete(chatId)
-    const mins = Math.max(1, Math.round((Date.now() - call.startedAt) / 60000))
-    await systemMessage(chatId, `Call ended · ${mins} min`).catch(console.error)
+    calls.delete(key)
+    if (key.startsWith('chat:')) {
+      const mins = Math.max(1, Math.round((Date.now() - call.startedAt) / 60000))
+      await systemMessage(key.slice(5), `Call ended · ${mins} min`).catch(console.error)
+    }
   }
-  broadcastCall(chatId)
+  broadcastCall(key)
 }
 
 const num = v => typeof v === 'number' && Number.isFinite(v)
@@ -289,44 +296,81 @@ export const realtime = {
       })
 
       // ----- calls (WebRTC signalling; audio/video flows directly between browsers) -----
-      on('call:join', async ({ chatId, video }) => {
-        if (typeof chatId !== 'string' || !socket.rooms.has(chatChannel(chatId))) throw new Error("You're not in this chat")
+      on('call:join', async ({ key, video }) => {
+        if (typeof key !== 'string' || !CALL_KEY.test(key)) throw new Error('Unknown call')
+        if (!socket.rooms.has(key)) throw new Error(key.startsWith('room:') ? 'Join the study room first' : "You're not in this chat")
         await leaveCall(socket)
-        let call = calls.get(chatId)
+        let call = calls.get(key)
         const isNew = !call
         if (!call) {
-          call = { chatId, startedAt: Date.now(), video: !!video, participants: new Map(), board: null }
-          calls.set(chatId, call)
+          call = { key, startedAt: Date.now(), video: !!video, participants: new Map(), board: null }
+          calls.set(key, call)
         }
         if (call.participants.size >= MAX_CALL) throw new Error(`This call is full (${MAX_CALL} people max)`)
-        const existing = callSummary(chatId).participants
+        const existing = callSummary(key).participants
         call.participants.set(socket.id, { socketId: socket.id, userId, audio: true, video: !!video, screen: false })
-        callOfSocket.set(socket.id, chatId)
-        socket.join(callChannel(chatId))
-        broadcastCall(chatId)
-        if (isNew) {
+        callOfSocket.set(socket.id, key)
+        socket.join(callChannel(key))
+        broadcastCall(key)
+        if (isNew && key.startsWith('chat:')) {
+          const chatId = key.slice(5)
           const name = users.get(userId)?.name ?? 'Someone'
           await systemMessage(chatId, `${name} started a ${video ? 'video' : 'voice'} call`)
-          socket.to(chatChannel(chatId)).emit('call:ring', { chatId, video: !!video, from: { id: userId, name, avatar: users.get(userId)?.avatar ?? 0 } })
+          socket.to(key).emit('call:ring', { chatId, video: !!video, from: { id: userId, name, avatar: users.get(userId)?.avatar ?? 0 } })
         }
         // the new person calls everyone already here; they just answer
         return { mySocketId: socket.id, participants: existing, board: call.board }
       })
 
+      // ----- chat inside a study room -----
+      on('room:message', async ({ kind, body }) => {
+        const roomId = roomOfUser.get(userId)
+        if (!roomId) throw new Error('Join a room first')
+        const k = kind === 'image' ? 'image' : 'text'
+        let text = body
+        if (k === 'image') {
+          if (typeof text !== 'string' || !/^data:image\/(png|jpeg|webp|gif);base64,/.test(text) || text.length > 2_000_000) throw new Error('That image is too large or not supported')
+        } else {
+          text = typeof text === 'string' ? text.trim() : ''
+          if (!text || text.length > 2000) throw new Error('Messages must be 1 to 2000 characters')
+        }
+        const r = await q(
+          `INSERT INTO room_messages (room_id, user_id, kind, body) VALUES ($1, $2, $3, $4)
+           RETURNING id, room_id AS "roomId", user_id AS "userId", kind, body, ${ms('created_at')} AS "createdAt"`,
+          [roomId, userId, k, text],
+        )
+        const u = users.get(userId)
+        const msg = { ...r.rows[0], name: u?.name ?? 'Someone', avatar: u?.avatar ?? 0 }
+        io.to(channel(roomId)).emit('room:message', msg)
+        return { message: msg }
+      })
+      on('room:history', async () => {
+        const roomId = roomOfUser.get(userId)
+        if (!roomId) return { roomId: null, messages: [] }
+        const r = await q(
+          `SELECT m.id, m.room_id AS "roomId", m.user_id AS "userId", m.kind, m.body, ${ms('m.created_at')} AS "createdAt",
+                  coalesce(u.display_name, 'Former member') AS name, coalesce(u.avatar, 0) AS avatar
+           FROM room_messages m LEFT JOIN users u ON u.id = m.user_id
+           WHERE m.room_id = $1 ORDER BY m.created_at DESC LIMIT 60`,
+          [roomId],
+        )
+        return { roomId, messages: r.rows.reverse() }
+      })
+
       on('call:leave', async () => { await leaveCall(socket) })
 
       socket.on('rtc:signal', ({ to, data } = {}) => {
-        const chatId = callOfSocket.get(socket.id)
-        if (!chatId || typeof to !== 'string' || callOfSocket.get(to) !== chatId || !data) return
+        const key = callOfSocket.get(socket.id)
+        if (!key || typeof to !== 'string' || callOfSocket.get(to) !== key || !data) return
         io.to(to).emit('rtc:signal', { from: socket.id, data })
       })
 
       socket.on('call:media', ({ audio, video, screen } = {}) => {
-        const chatId = callOfSocket.get(socket.id)
-        const p = chatId && calls.get(chatId)?.participants.get(socket.id)
+        const key = callOfSocket.get(socket.id)
+        const p = key && calls.get(key)?.participants.get(socket.id)
         if (!p) return
         p.audio = !!audio; p.video = !!video; p.screen = !!screen
-        broadcastCall(chatId)
+        broadcastCall(key)
       })
 
       // ----- shared whiteboard inside a call -----
@@ -336,8 +380,8 @@ export const realtime = {
         if (!call) return
         const background = typeof bg === 'string' && bg.startsWith('data:image/') && bg.length < 4_000_000 ? bg : null
         call.board = { strokes: [], bg: background, openedBy: userId }
-        io.to(callChannel(call.chatId)).emit('board:state', call.board)
-        broadcastCall(call.chatId)
+        io.to(callChannel(call.key)).emit('board:state', call.board)
+        broadcastCall(call.key)
       })
       socket.on('board:strokes', ({ strokes } = {}) => {
         const call = myCall()
@@ -346,21 +390,21 @@ export const realtime = {
         if (!clean.length) return
         call.board.strokes.push(...clean)
         if (call.board.strokes.length > MAX_STROKES) call.board.strokes.splice(0, call.board.strokes.length - MAX_STROKES)
-        socket.to(callChannel(call.chatId)).emit('board:strokes', { strokes: clean })
+        socket.to(callChannel(call.key)).emit('board:strokes', { strokes: clean })
       })
       socket.on('board:clear', () => {
         const call = myCall()
         if (!call?.board) return
         call.board.strokes = []
         call.board.bg = null
-        io.to(callChannel(call.chatId)).emit('board:state', call.board)
+        io.to(callChannel(call.key)).emit('board:state', call.board)
       })
       socket.on('board:close', () => {
         const call = myCall()
         if (!call?.board) return
         call.board = null
-        io.to(callChannel(call.chatId)).emit('board:state', null)
-        broadcastCall(call.chatId)
+        io.to(callChannel(call.key)).emit('board:state', null)
+        broadcastCall(call.key)
       })
 
       socket.on('disconnect', async () => {
@@ -407,7 +451,7 @@ export const realtime = {
   leaveChat(chatId, userIds) {
     userIds.forEach(id => forEachSocket(id, s => {
       s.leave(chatChannel(chatId))
-      if (callOfSocket.get(s.id) === chatId) leaveCall(s).catch(console.error)
+      if (callOfSocket.get(s.id) === `chat:${chatId}`) leaveCall(s).catch(console.error)
     }))
   },
 

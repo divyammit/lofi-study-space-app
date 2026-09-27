@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../../lib/store'
 import { fmtClock, fmtHours } from '../../lib/dates'
-import type { MemberStatus, StudyRoom } from '../../lib/types'
+import type { MemberStatus, RoomMessage, StudyRoom } from '../../lib/types'
+import { useCall } from '../../lib/call'
+import { boardSnapshot, prepareImage } from '../../lib/board'
 import { Panel, Empty } from '../ui'
 import PixelAvatar from '../PixelAvatar'
 import PixelIcon from '../PixelIcon'
@@ -64,6 +66,7 @@ export default function StreetPanel({ onClose }: { onClose: () => void }) {
                   <span><span className="blink text-moss">●</span> live {fmtHours(Math.max(0, sNow - r.startedAt) / 60000)}</span>
                   <span>{roomSummary(r, sNow)}</span>
                   <span>{r.members.length} studying</span>
+                  {r.call && <span className="text-moss"><span className="blink">●</span> call · {r.call.participants.length}</span>}
                 </div>
               </div>
               <button className="px-solid shrink-0" disabled={busy === r.id} onClick={() => join(r)}>Join</button>
@@ -78,6 +81,7 @@ export default function StreetPanel({ onClose }: { onClose: () => void }) {
 
 export function RoomView({ onClose }: { onClose: () => void }) {
   const { myRoom, account, serverNow, timer, timeLeft, startTimer, pauseTimer, leaveRoom, toast, friends, inviteFriend, now } = useStore()
+  const callStore = useCall()
   const [inviting, setInviting] = useState(false)
   void now
   if (!myRoom) return null
@@ -122,9 +126,28 @@ export function RoomView({ onClose }: { onClose: () => void }) {
         {timer.running ? <button className="px-solid" onClick={pauseTimer}>Pause</button> : <button className="px-solid px-primary" onClick={startTimer}>Start focus</button>}
       </div>
 
+      <div className="px-card mt-3 flex flex-wrap items-center gap-2 p-3">
+        <span className="min-w-0 flex-1 text-[17px] text-muted">
+          {callStore.call?.key === `room:${room.id}`
+            ? "You're in this room's call."
+            : room.call ? `${room.call.participants.length} in a call right now` : 'Talk it through: start a call for the room.'}
+        </span>
+        {callStore.call?.key === `room:${room.id}` ? (
+          <button className="px-solid" onClick={() => callStore.setExpanded(true)}>Open call</button>
+        ) : room.call ? (
+          <button className="px-solid px-primary" disabled={callStore.joining} onClick={() => void callStore.join(`room:${room.id}`, false)}>Join call · {room.call.participants.length}</button>
+        ) : (
+          <>
+            <button className="px-solid flex items-center gap-1" disabled={callStore.joining} onClick={() => void callStore.join(`room:${room.id}`, false)}><PixelIcon name="phone" size={16} />Voice</button>
+            <button className="px-solid flex items-center gap-1" disabled={callStore.joining} onClick={() => void callStore.join(`room:${room.id}`, true)}><PixelIcon name="video" size={16} />Video</button>
+          </>
+        )}
+      </div>
+
+      <RoomChat roomId={room.id} />
+
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button className="px-solid" onClick={() => setInviting(v => !v)} aria-expanded={inviting}>Invite a friend</button>
-        <button className="px-solid flex items-center gap-2 opacity-60" disabled title="Voice and video are not built yet"><PixelIcon name="lock" size={14} />Camera</button>
         <button className="px-solid ml-auto !bg-rose !text-white" onClick={leave}>{room.members.length === 1 ? 'Close room' : 'Leave room'}</button>
       </div>
       {inviting && (
@@ -139,7 +162,103 @@ export function RoomView({ onClose }: { onClose: () => void }) {
           ))}
         </ul>
       )}
-      <p className="mt-3 text-[17px] text-muted">Tiles show avatars and live timers. Camera and mic aren&rsquo;t part of this version.</p>
+      <p className="mt-3 text-[17px] text-muted">Tiles show each person&rsquo;s live timer. Join the call to talk, share your screen or open a shared whiteboard.</p>
     </Panel>
+  )
+}
+
+/** Chat for everyone in the current study room. History is saved with the room. */
+function RoomChat({ roomId }: { roomId: string }) {
+  const { socket, account, toast, whiteboard } = useStore()
+  const [messages, setMessages] = useState<RoomMessage[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const listRef = useRef<HTMLDivElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const emit = <T,>(event: string, payload: object) => new Promise<T>((resolve, reject) => {
+    if (!socket?.connected) return reject(new Error('Not connected to the server'))
+    socket.timeout(8000).emit(event, payload, (err: Error | null, res: { ok: boolean; error?: string } & T) => {
+      if (err) reject(new Error('The server did not respond'))
+      else if (!res.ok) reject(new Error(res.error || 'Something went wrong'))
+      else resolve(res)
+    })
+  })
+
+  useEffect(() => {
+    if (!socket) return
+    let alive = true
+    setLoaded(false)
+    emit<{ roomId: string | null; messages: RoomMessage[] }>('room:history', {})
+      .then(r => { if (alive) { setMessages(r.messages); setLoaded(true) } })
+      .catch(() => { if (alive) setLoaded(true) })
+    const onMsg = (m: RoomMessage) => {
+      if (m.roomId !== roomId) return
+      setMessages(ms => (ms.some(x => x.id === m.id) ? ms : [...ms.slice(-199), m]))
+    }
+    socket.on('room:message', onMsg)
+    return () => { alive = false; socket.off('room:message', onMsg) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, roomId])
+
+  useEffect(() => {
+    const el = listRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
+
+  const send = async (kind: 'text' | 'image', body: string) => {
+    setSending(true)
+    try { await emit('room:message', { kind, body }); if (kind === 'text') setText('') }
+    catch (e) { toast(e instanceof Error ? e.message : 'Could not send') }
+    finally { setSending(false) }
+  }
+  const submit = () => { if (text.trim() && !sending) void send('text', text.trim()) }
+
+  return (
+    <div className="mt-3">
+      <h3 className="mb-1 text-muted">Room chat</h3>
+      <div ref={listRef} className="px-card px-scroll h-56 overflow-y-auto p-2" aria-live="polite">
+        {!loaded && <p className="text-center text-muted">Loading…</p>}
+        {loaded && messages.length === 0 && <p className="py-6 text-center text-muted">No messages yet. Ask the room a doubt.</p>}
+        {messages.map((m, i) => {
+          const mine = m.userId === account.id
+          const first = i === 0 || messages[i - 1].userId !== m.userId
+          return (
+            <div key={m.id} className={`flex gap-2 ${mine ? 'flex-row-reverse' : ''} ${first ? 'mt-2' : 'mt-0.5'}`}>
+              {!mine && <div className="w-7 shrink-0">{first && <PixelAvatar seed={m.avatar} size={28} />}</div>}
+              <div className={`flex max-w-[80%] flex-col ${mine ? 'items-end' : 'items-start'}`}>
+                {first && !mine && <span className="text-[14px] text-muted">{m.name}</span>}
+                {m.kind === 'image'
+                  ? <img src={m.body} alt={`Image from ${mine ? 'you' : m.name}`} className="max-h-44 max-w-full object-contain" />
+                  : <div className={`px-2 py-1 whitespace-pre-wrap break-words ${mine ? 'bg-amber text-[#2a1c10]' : 'bg-card-hi'}`}>{m.body}</div>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={async e => {
+          const f = e.target.files?.[0]; e.target.value = ''
+          if (!f) return
+          try { await send('image', await prepareImage(f)) } catch (err) { toast(err instanceof Error ? err.message : 'Could not send that image') }
+        }} />
+        <button className="px-btn shrink-0 !p-1" onClick={() => fileRef.current?.click()} aria-label="Send an image to the room" title="Send an image"><PixelIcon name="image" size={20} /></button>
+        <button className="px-btn shrink-0 !p-1" aria-label="Share my whiteboard with the room" title="Share my whiteboard" onClick={async () => {
+          if (!whiteboard) { toast('Your whiteboard is empty. Draw something in the Whiteboard panel first.'); return }
+          await send('image', await boardSnapshot(whiteboard))
+        }}><PixelIcon name="board" size={20} /></button>
+        <input
+          className="px-input flex-1"
+          placeholder="Message the room…"
+          value={text}
+          maxLength={2000}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); submit() } }}
+          aria-label="Message the room"
+        />
+        <button className="px-solid px-primary shrink-0 !p-2" onClick={submit} disabled={!text.trim() || sending} aria-label="Send to room"><PixelIcon name="send" size={18} /></button>
+      </div>
+    </div>
   )
 }

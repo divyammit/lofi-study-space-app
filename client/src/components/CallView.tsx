@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useCall } from '../lib/call'
 import { useChat } from '../lib/chat'
 import { useStore } from '../lib/store'
@@ -7,17 +7,28 @@ import PixelAvatar from './PixelAvatar'
 import PixelIcon, { type IconName } from './PixelIcon'
 import SharedBoard from './SharedBoard'
 
-function Tile({ stream, muted, mirrored, name, avatar, showVideo, micOff, screen, compact }: {
+const STATE_LABEL: Partial<Record<RTCPeerConnectionState, string>> = {
+  new: 'Connecting…',
+  connecting: 'Connecting…',
+  disconnected: 'Reconnecting…',
+  failed: "Can't connect",
+}
+
+function Tile({ stream, muted, mirrored, name, avatar, showVideo, micOff, screen, compact, state }: {
   stream: MediaStream | null; muted?: boolean; mirrored?: boolean; name: string; avatar: number
-  showVideo: boolean; micOff: boolean; screen?: boolean; compact?: boolean
+  showVideo: boolean; micOff: boolean; screen?: boolean; compact?: boolean; state?: RTCPeerConnectionState
 }) {
   const ref = useRef<HTMLVideoElement>(null)
+  const [blocked, setBlocked] = useState(false)
   useEffect(() => {
     const v = ref.current
     if (!v) return
     if (v.srcObject !== stream) v.srcObject = stream
-    if (stream) v.play().catch(() => { /* autoplay blocked until the next click */ })
-  }, [stream])
+    // browsers may refuse to start sound without a click; then we show a "tap to hear" button
+    if (stream) v.play().then(() => setBlocked(false), () => { if (!muted) setBlocked(true) })
+  }, [stream, muted])
+  const unblock = () => { ref.current?.play().then(() => setBlocked(false), () => {}) }
+  const label = state ? STATE_LABEL[state] : undefined
   return (
     <div className={`relative overflow-hidden bg-[#141626] ${compact ? 'aspect-video' : 'aspect-video min-h-0'}`}>
       {/* the video element also plays the person's audio, so it stays mounted even when hidden */}
@@ -33,6 +44,14 @@ function Tile({ stream, muted, mirrored, name, avatar, showVideo, micOff, screen
         <div className="absolute inset-0 flex items-center justify-center">
           <PixelAvatar seed={avatar} size={compact ? 44 : 84} />
         </div>
+      )}
+      {label && (
+        <div className={`absolute inset-x-0 top-0 px-2 py-0.5 text-center text-[15px] ${state === 'failed' ? 'bg-rose text-white' : 'bg-black/60 text-[#ece3d0]'}`}>{label}</div>
+      )}
+      {blocked && (
+        <button className="absolute inset-0 flex items-center justify-center bg-black/60 text-[18px] text-[#ece3d0]" onClick={unblock}>
+          Tap to hear {name}
+        </button>
       )}
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-black/50 px-2 text-[17px] text-[#ece3d0]">
         <span className="truncate">{name}{screen ? ' · sharing screen' : ''}</span>
@@ -60,11 +79,14 @@ function CtrlButton({ icon, label, onClick, active = false, danger = false }: { 
 export default function CallView() {
   const c = useCall()
   const { chats, chatTitle } = useChat()
-  const { profile, now, whiteboard } = useStore()
+  const { profile, now, whiteboard, rooms } = useStore()
   if (!c.call) return null
 
-  const chat = chats.find(x => x.id === c.call!.chatId)
-  const title = chat ? chatTitle(chat) : 'Call'
+  const key = c.call.key
+  const chat = key.startsWith('chat:') ? chats.find(x => x.id === key.slice(5)) : null
+  const room = key.startsWith('room:') ? rooms.find(r => r.id === key.slice(5)) : null
+  const title = chat ? chatTitle(chat) : room ? `Study room · ${room.subject}` : 'Call'
+  const anyFailed = Object.values(c.peerStates).includes('failed')
   const elapsed = fmtClock(Math.max(0, now - c.call.joinedAt))
   const people = c.participants.length + 1
 
@@ -91,6 +113,7 @@ export default function CallView() {
           micOff={!p.audio}
           screen={p.screen}
           compact={compact}
+          state={c.peerStates[p.socketId] ?? 'new'}
         />
       ))}
     </>
@@ -149,7 +172,14 @@ export default function CallView() {
         )}
 
         {c.participants.length === 0 && !c.board && (
-          <p className="text-center text-muted">Waiting for others to join. Everyone in the chat got a notification.</p>
+          <p className="text-center text-muted">{room ? 'Waiting for others in the room to join the call.' : 'Waiting for others to join. Everyone in the chat got a notification.'}</p>
+        )}
+        {anyFailed && (
+          <p className="border-2 border-rose px-3 py-1 text-center text-[17px]">
+            {c.relayAvailable
+              ? "Someone's connection couldn't be reached. Ask them to check their internet or switch networks."
+              : "A network is blocking direct calls, so audio/video can't get through. The site owner needs to add a TURN relay (see DEPLOY.md, \"Making calls reliable\")."}
+          </p>
         )}
         {controls}
       </section>

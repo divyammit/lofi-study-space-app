@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { migrate, pool } from './db.js'
-import { HttpError } from './util.js'
+import { HttpError, wrap } from './util.js'
 import { realtime } from './realtime.js'
 import authRoutes from './routes/auth.js'
 import meRoutes from './routes/me.js'
@@ -15,6 +15,7 @@ import sessionRoutes from './routes/sessions.js'
 import friendRoutes from './routes/friends.js'
 import chatRoutes from './routes/chats.js'
 import { requireAuth } from './auth.js'
+import { iceServers, logRtcSetup } from './rtc.js'
 
 const PORT = Number(process.env.PORT) || 3001
 const app = express()
@@ -45,19 +46,10 @@ app.use('/api/sessions', sessionRoutes)
 app.use('/api/friends', friendRoutes)
 app.use('/api/chats', chatRoutes)
 
-// STUN/TURN servers for voice & video calls. STUN is free; TURN (optional) relays calls
-// for people whose network blocks direct connections (common on mobile data).
-app.get('/api/rtc-config', requireAuth, (_req, res) => {
-  const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
-  if (process.env.TURN_URLS) {
-    iceServers.push({
-      urls: process.env.TURN_URLS.split(',').map(s => s.trim()).filter(Boolean),
-      username: process.env.TURN_USERNAME,
-      credential: process.env.TURN_CREDENTIAL,
-    })
-  }
-  res.json({ iceServers })
-})
+// STUN/TURN servers for voice & video calls (see rtc.js)
+app.get('/api/rtc-config', requireAuth, wrap(async (_req, res) => {
+  res.json(await iceServers())
+}))
 app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not found')))
 
 // serve the built React app (client/dist) from the same server in production
@@ -81,4 +73,7 @@ app.use((err, _req, res, _next) => {
 const server = createServer(app)
 await migrate()
 await realtime.init(server)
-server.listen(PORT, () => console.log(`Lo-Fi Study Space server on http://localhost:${PORT}`))
+server.listen(PORT, () => {
+  console.log(`Lo-Fi Study Space server on http://localhost:${PORT}`)
+  logRtcSetup()
+})

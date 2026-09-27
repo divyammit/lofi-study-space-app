@@ -247,7 +247,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setChats(cs => cs.filter(c => c.id !== chatId))
       setActiveChatId(a => (a === chatId ? null : a))
     }
-    const onCallState = ({ chatId, call }: { chatId: string; call: CallSummary | null }) => {
+    const onCallState = ({ key, call }: { key: string; call: CallSummary | null }) => {
+      if (!key.startsWith('chat:')) return
+      const chatId = key.slice(5)
       setChats(cs => cs.map(c => (c.id === chatId ? { ...c, call } : c)))
     }
     const onConnect = () => {

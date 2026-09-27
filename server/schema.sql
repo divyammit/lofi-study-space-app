@@ -112,3 +112,14 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS messages_chat_time ON messages (chat_id, created_at DESC);
+
+-- chat inside a Study Street room (kept after the room closes, as its history)
+CREATE TABLE IF NOT EXISTS room_messages (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  room_id    UUID NOT NULL REFERENCES study_rooms(id) ON DELETE CASCADE,
+  user_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+  kind       VARCHAR(6) NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'image')),
+  body       TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS room_messages_room_time ON room_messages (room_id, created_at DESC);

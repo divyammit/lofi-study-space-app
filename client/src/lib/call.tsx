@@ -13,7 +13,8 @@ import type { BoardState, BoardStroke, CallParticipant, CallSummary } from './ty
  * video slot. Turning the camera on/off or sharing the screen just swaps what's in the video slot.
  */
 
-interface ActiveCall { chatId: string; mySocketId: string; joinedAt: number }
+/** key is 'chat:<chatId>' for chat calls or 'room:<roomId>' for Study Street rooms */
+interface ActiveCall { key: string; mySocketId: string; joinedAt: number }
 
 interface CallStore {
   call: ActiveCall | null
@@ -27,7 +28,10 @@ interface CallStore {
   canShareScreen: boolean
   expanded: boolean
   setExpanded: (v: boolean) => void
-  join: (chatId: string, video: boolean) => Promise<void>
+  /** connection state per remote person: 'new' | 'connecting' | 'connected' | 'failed' ... */
+  peerStates: Record<string, RTCPeerConnectionState>
+  relayAvailable: boolean
+  join: (key: string, video: boolean) => Promise<void>
   leave: () => void
   toggleMic: () => void
   toggleCam: () => Promise<void>
@@ -50,7 +54,7 @@ export const useCall = () => {
 const say = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export function CallProvider({ children }: { children: ReactNode }) {
-  const { socket, account, toast, settings } = useStore()
+  const { socket, account, toast, settings, myRoom } = useStore()
   const { chats, chatTitle, openChat } = useChat()
   // (chats is read through chatsRef inside socket handlers)
   const [call, setCall] = useState<ActiveCall | null>(null)
@@ -63,6 +67,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [screenOn, setScreenOn] = useState(false)
   const [expanded, setExpanded] = useState(true)
   const [board, setBoard] = useState<BoardState | null>(null)
+  const [peerStates, setPeerStates] = useState<Record<string, RTCPeerConnectionState>>({})
+  const [relayAvailable, setRelayAvailable] = useState(false)
 
   const callRef = useRef<ActiveCall | null>(null)
   callRef.current = call
@@ -112,30 +118,59 @@ export function CallProvider({ children }: { children: ReactNode }) {
     pendingIce.current.delete(id)
     chains.current.delete(id)
     setRemoteStreams(s => { const n = { ...s }; delete n[id]; return n })
+    setPeerStates(s => { const n = { ...s }; delete n[id]; return n })
   }, [])
 
   const makePeer = useCallback((remoteId: string) => {
-    const pc = new RTCPeerConnection({ iceServers: iceServers.current ?? [] })
+    // debugging aid: localStorage.setItem('lofi:forceRelay', '1') forces calls through the TURN relay
+    const forceRelay = (() => { try { return localStorage.getItem('lofi:forceRelay') === '1' } catch { return false } })()
+    const pc = new RTCPeerConnection({ iceServers: iceServers.current ?? [], iceTransportPolicy: forceRelay ? 'relay' : 'all' })
     peers.current.set(remoteId, pc)
     pc.onicecandidate = e => { if (e.candidate) signal(remoteId, { candidate: e.candidate.toJSON() }) }
     pc.ontrack = () => {
       const tracks = pc.getReceivers().map(r => r.track).filter(Boolean)
       setRemoteStreams(s => ({ ...s, [remoteId]: new MediaStream(tracks) }))
     }
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') {
-        const who = participantsRef.current.find(p => p.socketId === remoteId)?.name ?? 'someone'
-        toast(`Couldn't connect the call with ${who}. Their network may block direct calls.`)
+    let restarted = false
+    let gaveUp = false
+    let timer = 0
+    const giveUp = () => {
+      if (gaveUp || pc.connectionState === 'connected' || pc.connectionState === 'closed') return
+      if (!restarted && initiatorRef.current.has(remoteId)) {
+        // one retry with fresh network routes before giving up
+        restarted = true
+        pc.restartIce()
+        pc.createOffer({ iceRestart: true }).then(o => pc.setLocalDescription(o)).then(() => signal(remoteId, { sdp: pc.localDescription })).catch(() => {})
+        timer = window.setTimeout(giveUp, 15000)
+        return
       }
+      gaveUp = true
+      setPeerStates(s => ({ ...s, [remoteId]: 'failed' }))
+      const who = participantsRef.current.find(p => p.socketId === remoteId)?.name ?? 'someone'
+      toast(relayRef.current
+        ? `Couldn't connect the call with ${who}. Check both internet connections.`
+        : `Couldn't connect audio/video with ${who}: a network is blocking direct calls. The site needs a TURN relay (see DEPLOY.md).`)
+    }
+    // browsers can keep "connecting" forever on a blocked network, so give it a time limit
+    timer = window.setTimeout(giveUp, 20000)
+    pc.onconnectionstatechange = () => {
+      const st = pc.connectionState
+      if (st === 'connected') { clearTimeout(timer); gaveUp = false }
+      if (st === 'closed') clearTimeout(timer)
+      if (!gaveUp || st === 'connected') setPeerStates(s => ({ ...s, [remoteId]: st }))
+      if (st === 'failed') { clearTimeout(timer); giveUp() }
     }
     return pc
   }, [signal, toast])
 
+  const initiatorRef = useRef(new Set<string>()) // peers we sent the first offer to
+  const relayRef = useRef(false)
   const participantsRef = useRef(participants)
   participantsRef.current = participants
 
   /** We joined: call everyone already in the call. */
   const callPeer = useCallback(async (remoteId: string) => {
+    initiatorRef.current.add(remoteId)
     const pc = makePeer(remoteId)
     const a = pc.addTransceiver('audio', { direction: 'sendrecv' })
     const v = pc.addTransceiver('video', { direction: 'sendrecv' })
@@ -187,6 +222,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setScreenOn(false)
     setCamOn(false)
     setMicOn(true)
+    setPeerStates({})
+    initiatorRef.current.clear()
   }, [dropPeer])
 
   const leave = useCallback(() => {
@@ -195,14 +232,18 @@ export function CallProvider({ children }: { children: ReactNode }) {
     cleanup()
   }, [socket, cleanup])
 
-  const join = useCallback(async (chatId: string, video: boolean) => {
+  const join = useCallback(async (key: string, video: boolean) => {
     if (!socket?.connected) { toast('Not connected to the server yet. Try again in a moment.'); return }
-    if (callRef.current?.chatId === chatId) { setExpanded(true); return }
+    if (callRef.current?.key === key) { setExpanded(true); return }
     if (callRef.current) leave()
     if (!navigator.mediaDevices?.getUserMedia) { toast('Calls need a browser with microphone access over https.'); return }
     setJoining(true)
     try {
-      if (!iceServers.current) iceServers.current = (await api<{ iceServers: RTCIceServer[] }>('/api/rtc-config')).iceServers
+      // fetched on every join, so rotating TURN credentials stay fresh
+      const cfg = await api<{ iceServers: RTCIceServer[]; relay: boolean }>('/api/rtc-config')
+      iceServers.current = cfg.iceServers
+      relayRef.current = cfg.relay
+      setRelayAvailable(cfg.relay)
       try {
         const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: video ? { width: { ideal: 640 }, height: { ideal: 480 } } : false })
         audioTrack.current = s.getAudioTracks()[0] ?? null
@@ -223,11 +264,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
       setCamOn(!!camTrack.current)
       refreshLocal()
       const res = await new Promise<{ ok: boolean; error?: string; mySocketId: string; participants: CallParticipant[]; board: BoardState | null }>(resolve =>
-        socket.timeout(10000).emit('call:join', { chatId, video: !!camTrack.current }, (err: Error | null, r: { ok: boolean; error?: string; mySocketId: string; participants: CallParticipant[]; board: BoardState | null }) =>
+        socket.timeout(10000).emit('call:join', { key, video: !!camTrack.current }, (err: Error | null, r: { ok: boolean; error?: string; mySocketId: string; participants: CallParticipant[]; board: BoardState | null }) =>
           resolve(err ? { ok: false, error: 'The server did not respond', mySocketId: '', participants: [], board: null } : r)),
       )
       if (!res.ok) { cleanup(); toast(res.error ?? 'Could not join the call'); return }
-      const active = { chatId, mySocketId: res.mySocketId, joinedAt: Date.now() }
+      const active = { key, mySocketId: res.mySocketId, joinedAt: Date.now() }
       callRef.current = active
       setCall(active)
       setExpanded(true)
@@ -319,22 +360,22 @@ export function CallProvider({ children }: { children: ReactNode }) {
       const next = prev.then(() => handleSignal(from, data)).catch(e => console.error('signal error', say(e)))
       chains.current.set(from, next)
     }
-    const onState = ({ chatId, call: summary }: { chatId: string; call: CallSummary | null }) => {
-      if (callRef.current?.chatId !== chatId) return
+    const onState = ({ key, call: summary }: { key: string; call: CallSummary | null }) => {
+      if (callRef.current?.key !== key) return
       setParticipants(summary?.participants.filter(p => p.socketId !== callRef.current?.mySocketId) ?? [])
     }
     const onPeerLeft = ({ socketId }: { socketId: string }) => dropPeer(socketId)
     const onRing = ({ chatId, video, from }: { chatId: string; video: boolean; from: { id: string; name: string } }) => {
-      if (from.id === account.id || callRef.current?.chatId === chatId) return
+      if (from.id === account.id || callRef.current?.key === `chat:${chatId}`) return
       const chat = chatsRef.current.find(c => c.id === chatId)
       const where = chat && !chat.isDirect ? ` in ${chatTitle(chat)}` : ''
       if (settings.chime) { engine.chime(); setTimeout(() => engine.chime(), 700) }
-      toast(`${from.name} started a ${video ? 'video' : 'voice'} call${where}.`, { label: 'Join', run: () => { openChat(chatId); void join(chatId, false) } })
+      toast(`${from.name} started a ${video ? 'video' : 'voice'} call${where}.`, { label: 'Join', run: () => { openChat(chatId); void join(`chat:${chatId}`, false) } })
     }
     const onBoardState = (b: BoardState | null) => setBoard(b)
     const onBoardStrokes = ({ strokes }: { strokes: BoardStroke[] }) => strokeListeners.current.forEach(fn => fn(strokes))
     const onRemoved = ({ chatId }: { chatId: string }) => {
-      if (callRef.current?.chatId === chatId) { cleanup(); toast('You were removed from this group, so you left its call.') }
+      if (callRef.current?.key === `chat:${chatId}`) { cleanup(); toast('You were removed from this group, so you left its call.') }
     }
     const onDisconnect = () => {
       if (callRef.current) { cleanup(); toast('Call dropped: the connection to the server was lost.') }
@@ -359,10 +400,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [socket, account.id, handleSignal, dropPeer, cleanup, toast, join, openChat, chatTitle, settings.chime])
 
+  // leaving a study room (or it closing) ends that room's call for us
+  useEffect(() => {
+    if (call?.key.startsWith('room:') && myRoom?.id !== call.key.slice(5)) cleanup()
+  }, [call, myRoom, cleanup])
+
   useEffect(() => () => { for (const pc of peers.current.values()) pc.close(); [audioTrack, camTrack, screenTrack].forEach(r => r.current?.stop()) }, [])
 
   const value: CallStore = {
-    call, joining, participants, remoteStreams, localStream, micOn, camOn, screenOn, canShareScreen, expanded, setExpanded,
+    call, joining, participants, remoteStreams, localStream, micOn, camOn, screenOn, canShareScreen, expanded, setExpanded, peerStates, relayAvailable,
     join, leave, toggleMic, toggleCam, toggleScreen, board, openBoard, closeBoard, clearBoard, sendStroke, onStrokes,
   }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

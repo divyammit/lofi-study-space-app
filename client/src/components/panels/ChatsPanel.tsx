@@ -205,7 +205,7 @@ function ChatView({ onClose, onBack, onInfo }: { onClose: () => void; onBack: ()
       : `${chat.members.length} members`
   const nameOf = (uid: string | null) => chat.members.find(m => m.id === uid)?.name ?? 'Former member'
   const avatarOf = (uid: string | null) => chat.members.find(m => m.id === uid)?.avatar ?? 0
-  const inThisCall = callStore.call?.chatId === chat.id
+  const inThisCall = callStore.call?.key === `chat:${chat.id}`
 
   const submit = () => {
     if (!text.trim()) return
@@ -268,7 +268,7 @@ function ChatView({ onClose, onBack, onInfo }: { onClose: () => void; onBack: ()
       <div className="-mt-1 mb-2 flex flex-wrap items-center gap-2">
         <span className={`min-w-0 flex-1 truncate text-[17px] ${typers.length ? 'text-amber' : 'text-muted'}`}>{subtitle}</span>
         {chat.call && !inThisCall && (
-          <button className="px-solid px-primary !py-1" onClick={() => void callStore.join(chat.id, false)} disabled={callStore.joining}>
+          <button className="px-solid px-primary !py-1" onClick={() => void callStore.join(`chat:${chat.id}`, false)} disabled={callStore.joining}>
             Join call · {chat.call.participants.length}
           </button>
         )}
@@ -276,10 +276,10 @@ function ChatView({ onClose, onBack, onInfo }: { onClose: () => void; onBack: ()
           <button className="px-solid !py-1" onClick={() => callStore.setExpanded(true)}>In call · open</button>
         ) : !chat.call && (
           <>
-            <button className="px-solid flex items-center gap-1 !px-2 !py-1" onClick={() => void callStore.join(chat.id, false)} disabled={callStore.joining} aria-label="Start voice call" title="Voice call">
+            <button className="px-solid flex items-center gap-1 !px-2 !py-1" onClick={() => void callStore.join(`chat:${chat.id}`, false)} disabled={callStore.joining} aria-label="Start voice call" title="Voice call">
               <PixelIcon name="phone" size={16} /><span className="hidden sm:inline">Voice</span>
             </button>
-            <button className="px-solid flex items-center gap-1 !px-2 !py-1" onClick={() => void callStore.join(chat.id, true)} disabled={callStore.joining} aria-label="Start video call" title="Video call">
+            <button className="px-solid flex items-center gap-1 !px-2 !py-1" onClick={() => void callStore.join(`chat:${chat.id}`, true)} disabled={callStore.joining} aria-label="Start video call" title="Video call">
               <PixelIcon name="video" size={16} /><span className="hidden sm:inline">Video</span>
             </button>
           </>
