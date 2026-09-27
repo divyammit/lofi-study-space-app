@@ -57,6 +57,7 @@ interface Store {
   setWhiteboard: (v: string | null) => void
   // live / social
   connected: boolean
+  socket: Socket | null
   serverNow: () => number
   rooms: StudyRoom[]
   myRoom: StudyRoom | null
@@ -255,6 +256,7 @@ export function AppProvider({ initial, onLoggedOut, children }: { initial: AppSt
   // ---- live connection (Socket.IO) ----
   const socketRef = useRef<Socket | null>(null)
   const [connected, setConnected] = useState(false)
+  const [socketState, setSocketState] = useState<Socket | null>(null)
   const [rooms, setRooms] = useState<StudyRoom[]>([])
   const offsetRef = useRef(0) // serverTime - localTime
   const [friends, setFriends] = useState<FriendsData>({ friends: [], incoming: [], outgoing: [] })
@@ -291,6 +293,7 @@ export function AppProvider({ initial, onLoggedOut, children }: { initial: AppSt
     }
     const s = socketUrl ? io(socketUrl, opts) : io(opts)
     socketRef.current = s
+    setSocketState(s)
     s.on('connect', () => setConnected(true))
     s.on('disconnect', () => setConnected(false))
     s.on('connect_error', err => { if (err.message === 'unauthorized') window.dispatchEvent(new Event('lofi:unauthorized')) })
@@ -312,7 +315,7 @@ export function AppProvider({ initial, onLoggedOut, children }: { initial: AppSt
       })
     })
     void refreshFriends()
-    return () => { s.removeAllListeners(); s.disconnect(); socketRef.current = null }
+    return () => { s.removeAllListeners(); s.disconnect(); socketRef.current = null; setSocketState(null) }
   }, [refreshFriends, toast])
 
   // share my timer with the room and my friends whenever it changes
@@ -357,7 +360,7 @@ export function AppProvider({ initial, onLoggedOut, children }: { initial: AppSt
     settings, setSettings, profile, setProfile, tasks, setTasks, notes, setNotes, sessions, setSessions,
     mix, setSound, anySoundOn, timer, now, timeLeft, startTimer, pauseTimer, resetTimer, skipTimer, setMode, setSubject,
     sessionsToday, toasts, toast, focusMode, setFocusMode, whiteboard, setWhiteboard,
-    connected, serverNow, rooms, myRoom, createRoom, joinRoom, leaveRoom,
+    connected, socket: socketState, serverNow, rooms, myRoom, createRoom, joinRoom, leaveRoom,
     friends, friendsLoaded, refreshFriends, sendFriendRequest, acceptFriend, removeFriend, inviteFriend,
   }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

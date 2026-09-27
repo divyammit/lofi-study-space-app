@@ -79,3 +79,36 @@ CREATE TABLE IF NOT EXISTS room_members (
 );
 -- a user can be in at most one room at a time
 CREATE UNIQUE INDEX IF NOT EXISTS room_members_one_room ON room_members (user_id);
+
+-- ---------- Chats ----------
+-- one row per conversation: a named group, or a direct chat between two friends
+CREATE TABLE IF NOT EXISTS chats (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name       VARCHAR(60),                          -- NULL for direct chats
+  is_direct  BOOLEAN NOT NULL DEFAULT false,
+  direct_key TEXT UNIQUE,                          -- 'smallerUserId:largerUserId', stops duplicate direct chats
+  created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (is_direct = (direct_key IS NOT NULL)),
+  CHECK (is_direct OR name IS NOT NULL)
+);
+
+CREATE TABLE IF NOT EXISTS chat_members (
+  chat_id      UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role         VARCHAR(6)  NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+  joined_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_read_at TIMESTAMPTZ NOT NULL DEFAULT now(),  -- messages after this are unread
+  PRIMARY KEY (chat_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS chat_members_user ON chat_members (user_id);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_id    UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  user_id    UUID REFERENCES users(id) ON DELETE SET NULL,   -- NULL for system messages or deleted users
+  kind       VARCHAR(6) NOT NULL DEFAULT 'text' CHECK (kind IN ('text', 'image', 'system')),
+  body       TEXT NOT NULL,                                  -- text, an image data URL, or a system note
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS messages_chat_time ON messages (chat_id, created_at DESC);

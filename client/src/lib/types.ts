@@ -59,7 +59,7 @@ export type SoundMix = Record<SoundId, { on: boolean; vol: number }>
 
 export type PanelId =
   | 'timer' | 'tasks' | 'notes' | 'board' | 'sounds'
-  | 'stats' | 'street' | 'friends' | 'profile' | 'settings'
+  | 'stats' | 'street' | 'chats' | 'friends' | 'profile' | 'settings'
 
 export interface Account {
   id: string
@@ -120,3 +120,55 @@ export interface FriendsData {
   incoming: Friend[]
   outgoing: Friend[]
 }
+
+export interface ChatMember {
+  id: string
+  username: string
+  name: string
+  avatar: number
+  role: 'admin' | 'member'
+}
+
+export interface ChatMessage {
+  id: string
+  chatId: string
+  userId: string | null
+  kind: 'text' | 'image' | 'system'
+  body: string
+  createdAt: number
+  pending?: boolean // shown before the server confirms it
+  failed?: boolean
+}
+
+export interface CallParticipant {
+  socketId: string
+  userId: string
+  name: string
+  avatar: number
+  audio: boolean
+  video: boolean
+  screen: boolean
+}
+
+export interface CallSummary {
+  startedAt: number
+  video: boolean
+  board: boolean
+  participants: CallParticipant[]
+}
+
+export interface Chat {
+  id: string
+  name: string | null
+  isDirect: boolean
+  createdAt: number
+  lastReadAt: number
+  unread: number
+  members: ChatMember[]
+  lastMessage: Pick<ChatMessage, 'id' | 'kind' | 'userId' | 'body' | 'createdAt'> | null
+  call: CallSummary | null
+}
+
+/** One stroke segment on the shared call whiteboard, in 0..1 board coordinates. */
+export interface BoardStroke { p: [number, number, number, number]; c: string; w: number; e: boolean }
+export interface BoardState { strokes: BoardStroke[]; bg: string | null; openedBy: string }

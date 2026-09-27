@@ -15,6 +15,10 @@ const users = new Map()           // userId -> { id, username, name, avatar }
 const statusByUser = new Map()    // userId -> { mode, running, endsAt, remaining, total, subject }
 const roomOfUser = new Map()      // userId -> roomId
 const rooms = new Map()           // roomId -> { id, hostId, subject, startedAt, members: Set<userId> }
+const calls = new Map()           // chatId -> { chatId, startedAt, video, participants: Map<socketId, P>, board }
+const callOfSocket = new Map()    // socketId -> chatId
+const MAX_CALL = 8                // everyone connects to everyone (mesh), so keep calls small
+const MAX_STROKES = 40000
 
 const channel = roomId => `room:${roomId}`
 const forEachSocket = (userId, fn) => socketsByUser.get(userId)?.forEach(fn)
@@ -140,6 +144,68 @@ function cleanStatus(s) {
   return { mode, running, remaining, total, endsAt: running ? Date.now() + remaining : null, subject: cleanSubject(s.subject) }
 }
 
+// ---------- chats ----------
+const chatChannel = chatId => `chat:${chatId}`
+const callChannel = chatId => `call:${chatId}`
+
+async function systemMessage(chatId, text) {
+  const r = await q(
+    `INSERT INTO messages (chat_id, kind, body) VALUES ($1, 'system', $2)
+     RETURNING id, chat_id AS "chatId", user_id AS "userId", kind, body, ${ms('created_at')} AS "createdAt"`,
+    [chatId, text],
+  )
+  io?.to(chatChannel(chatId)).emit('chat:message', r.rows[0])
+}
+
+// ---------- calls ----------
+function callSummary(chatId) {
+  const call = calls.get(chatId)
+  if (!call) return null
+  return {
+    startedAt: call.startedAt,
+    video: call.video,
+    board: !!call.board,
+    participants: [...call.participants.values()].map(p => ({
+      socketId: p.socketId,
+      userId: p.userId,
+      name: users.get(p.userId)?.name ?? 'Someone',
+      avatar: users.get(p.userId)?.avatar ?? 0,
+      audio: p.audio,
+      video: p.video,
+      screen: p.screen,
+    })),
+  }
+}
+
+function broadcastCall(chatId) {
+  io?.to(chatChannel(chatId)).emit('call:state', { chatId, call: callSummary(chatId) })
+}
+
+async function leaveCall(socket) {
+  const chatId = callOfSocket.get(socket.id)
+  if (!chatId) return
+  callOfSocket.delete(socket.id)
+  socket.leave(callChannel(chatId))
+  const call = calls.get(chatId)
+  if (!call) return
+  call.participants.delete(socket.id)
+  io.to(callChannel(chatId)).emit('call:peer-left', { socketId: socket.id })
+  if (call.participants.size === 0) {
+    calls.delete(chatId)
+    const mins = Math.max(1, Math.round((Date.now() - call.startedAt) / 60000))
+    await systemMessage(chatId, `Call ended · ${mins} min`).catch(console.error)
+  }
+  broadcastCall(chatId)
+}
+
+const num = v => typeof v === 'number' && Number.isFinite(v)
+function cleanStroke(s) {
+  if (!s || !Array.isArray(s.p) || s.p.length !== 4 || !s.p.every(n => num(n) && n >= -0.1 && n <= 1.1)) return null
+  const color = typeof s.c === 'string' && /^#[0-9a-f]{6}$/i.test(s.c) ? s.c : '#2e2940'
+  const width = num(s.w) ? Math.min(Math.max(s.w, 1), 60) : 4
+  return { p: s.p, c: color, w: width, e: !!s.e }
+}
+
 export const realtime = {
   async init(httpServer) {
     // rooms can't survive a restart (nobody is connected yet), so close any left open
@@ -148,7 +214,8 @@ export const realtime = {
 
     // CLIENT_ORIGIN lists frontend domains allowed to open a socket, e.g. https://lofi.vercel.app
     const origins = (process.env.CLIENT_ORIGIN || '').split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean)
-    io = new Server(httpServer, { cors: { origin: origins.length ? origins : false } })
+    // 5 MB messages so a whiteboard background can be shared into a call
+    io = new Server(httpServer, { cors: { origin: origins.length ? origins : false }, maxHttpBufferSize: 5e6 })
 
     io.use((socket, next) => {
       const userId = userIdFromSocketToken(socket.handshake.auth?.token) || userIdFromCookieHeader(socket.handshake.headers.cookie)
@@ -167,6 +234,12 @@ export const realtime = {
       socketsByUser.get(userId).add(socket)
       const roomId = roomOfUser.get(userId)
       if (roomId) socket.join(channel(roomId))
+
+      // subscribe this socket to every chat the user is in
+      try {
+        const chats = await q(`SELECT chat_id FROM chat_members WHERE user_id = $1`, [userId])
+        chats.rows.forEach(r => socket.join(chatChannel(r.chat_id)))
+      } catch (e) { console.error(e) }
 
       socket.emit('hello', { serverTime: Date.now(), userId })
       socket.emit('rooms', { rooms: listRooms(), serverTime: Date.now() })
@@ -209,7 +282,89 @@ export const realtime = {
         }))
       })
 
+      // ----- chat -----
+      socket.on('chat:typing', ({ chatId } = {}) => {
+        if (typeof chatId !== 'string' || !socket.rooms.has(chatChannel(chatId))) return
+        socket.to(chatChannel(chatId)).emit('chat:typing', { chatId, userId, name: users.get(userId)?.name })
+      })
+
+      // ----- calls (WebRTC signalling; audio/video flows directly between browsers) -----
+      on('call:join', async ({ chatId, video }) => {
+        if (typeof chatId !== 'string' || !socket.rooms.has(chatChannel(chatId))) throw new Error("You're not in this chat")
+        await leaveCall(socket)
+        let call = calls.get(chatId)
+        const isNew = !call
+        if (!call) {
+          call = { chatId, startedAt: Date.now(), video: !!video, participants: new Map(), board: null }
+          calls.set(chatId, call)
+        }
+        if (call.participants.size >= MAX_CALL) throw new Error(`This call is full (${MAX_CALL} people max)`)
+        const existing = callSummary(chatId).participants
+        call.participants.set(socket.id, { socketId: socket.id, userId, audio: true, video: !!video, screen: false })
+        callOfSocket.set(socket.id, chatId)
+        socket.join(callChannel(chatId))
+        broadcastCall(chatId)
+        if (isNew) {
+          const name = users.get(userId)?.name ?? 'Someone'
+          await systemMessage(chatId, `${name} started a ${video ? 'video' : 'voice'} call`)
+          socket.to(chatChannel(chatId)).emit('call:ring', { chatId, video: !!video, from: { id: userId, name, avatar: users.get(userId)?.avatar ?? 0 } })
+        }
+        // the new person calls everyone already here; they just answer
+        return { mySocketId: socket.id, participants: existing, board: call.board }
+      })
+
+      on('call:leave', async () => { await leaveCall(socket) })
+
+      socket.on('rtc:signal', ({ to, data } = {}) => {
+        const chatId = callOfSocket.get(socket.id)
+        if (!chatId || typeof to !== 'string' || callOfSocket.get(to) !== chatId || !data) return
+        io.to(to).emit('rtc:signal', { from: socket.id, data })
+      })
+
+      socket.on('call:media', ({ audio, video, screen } = {}) => {
+        const chatId = callOfSocket.get(socket.id)
+        const p = chatId && calls.get(chatId)?.participants.get(socket.id)
+        if (!p) return
+        p.audio = !!audio; p.video = !!video; p.screen = !!screen
+        broadcastCall(chatId)
+      })
+
+      // ----- shared whiteboard inside a call -----
+      const myCall = () => { const id = callOfSocket.get(socket.id); return id ? calls.get(id) : null }
+      socket.on('board:open', ({ bg } = {}) => {
+        const call = myCall()
+        if (!call) return
+        const background = typeof bg === 'string' && bg.startsWith('data:image/') && bg.length < 4_000_000 ? bg : null
+        call.board = { strokes: [], bg: background, openedBy: userId }
+        io.to(callChannel(call.chatId)).emit('board:state', call.board)
+        broadcastCall(call.chatId)
+      })
+      socket.on('board:strokes', ({ strokes } = {}) => {
+        const call = myCall()
+        if (!call?.board || !Array.isArray(strokes)) return
+        const clean = strokes.slice(0, 200).map(cleanStroke).filter(Boolean)
+        if (!clean.length) return
+        call.board.strokes.push(...clean)
+        if (call.board.strokes.length > MAX_STROKES) call.board.strokes.splice(0, call.board.strokes.length - MAX_STROKES)
+        socket.to(callChannel(call.chatId)).emit('board:strokes', { strokes: clean })
+      })
+      socket.on('board:clear', () => {
+        const call = myCall()
+        if (!call?.board) return
+        call.board.strokes = []
+        call.board.bg = null
+        io.to(callChannel(call.chatId)).emit('board:state', call.board)
+      })
+      socket.on('board:close', () => {
+        const call = myCall()
+        if (!call?.board) return
+        call.board = null
+        io.to(callChannel(call.chatId)).emit('board:state', null)
+        broadcastCall(call.chatId)
+      })
+
       socket.on('disconnect', async () => {
+        leaveCall(socket).catch(console.error)
         const set = socketsByUser.get(userId)
         set?.delete(socket)
         if (set && set.size === 0) {
@@ -239,6 +394,29 @@ export const realtime = {
   /** Tell these users to re-fetch their friend list (request sent, accepted, removed). */
   friendsChanged(userIds) {
     userIds.forEach(id => forEachSocket(id, s => s.emit('friends:changed')))
+  },
+
+  callSummary,
+
+  /** Subscribe users' open sockets to a chat (after creating it or adding them). */
+  joinChat(chatId, userIds) {
+    userIds.forEach(id => forEachSocket(id, s => s.join(chatChannel(chatId))))
+  },
+
+  /** Unsubscribe users from a chat, and drop them from its call if they're in one. */
+  leaveChat(chatId, userIds) {
+    userIds.forEach(id => forEachSocket(id, s => {
+      s.leave(chatChannel(chatId))
+      if (callOfSocket.get(s.id) === chatId) leaveCall(s).catch(console.error)
+    }))
+  },
+
+  emitToChat(chatId, event, payload) {
+    io?.to(chatChannel(chatId)).emit(event, payload)
+  },
+
+  emitToUser(userId, event, payload) {
+    forEachSocket(userId, s => s.emit(event, payload))
   },
 
   disconnectUser(userId) {

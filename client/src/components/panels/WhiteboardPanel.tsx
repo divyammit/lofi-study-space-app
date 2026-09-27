@@ -2,25 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../../lib/store'
 import { saveFile } from '../../lib/saveFile'
 import { Panel } from '../ui'
+import { BH, BOARD_COLORS, BW, paintPaper } from '../../lib/board'
 
-const BW = 1200, BH = 800
-const COLORS = [
-  { c: '#2e2940', n: 'Ink' },
-  { c: '#3b5ba5', n: 'Blue' },
-  { c: '#c2404f', n: 'Red' },
-  { c: '#4f7a3a', n: 'Green' },
-  { c: '#c9701f', n: 'Amber' },
-]
 type Tool = 'pen' | 'eraser' | 'text'
-
-function paintPaper(c: CanvasRenderingContext2D) {
-  c.fillStyle = '#f6efdf'
-  c.fillRect(0, 0, BW, BH)
-  c.fillStyle = '#c9d6ea'
-  for (let y = 60; y < BH; y += 40) c.fillRect(0, y, BW, 2)
-  c.fillStyle = '#e8a8a8'
-  c.fillRect(90, 0, 2, BH)
-}
+const COLORS = BOARD_COLORS
 
 export default function WhiteboardPanel({ onClose }: { onClose: () => void }) {
   const { whiteboard, setWhiteboard, toast } = useStore()
@@ -29,8 +14,14 @@ export default function WhiteboardPanel({ onClose }: { onClose: () => void }) {
   const [tool, setTool] = useState<Tool>('pen')
   const [color, setColor] = useState(COLORS[0].c)
   const [size, setSize] = useState(4)
-  const [textAt, setTextAt] = useState<{ x: number; y: number; cx: number; cy: number } | null>(null)
-  const [text, setText] = useState('')
+  const [textAt, setTextAtState] = useState<{ x: number; y: number; cx: number; cy: number } | null>(null)
+  const [text, setTextState] = useState('')
+  // refs mirror the text state so blur/click handlers never read stale values
+  const textAtRef = useRef<typeof textAt>(null)
+  const textRef = useRef('')
+  const textInputRef = useRef<HTMLInputElement>(null)
+  const setTextAt = (v: typeof textAt) => { textAtRef.current = v; setTextAtState(v) }
+  const setText = (v: string) => { textRef.current = v; setTextState(v) }
   const drawing = useRef<{ x: number; y: number } | null>(null)
   const saveTimer = useRef(0)
 
@@ -57,7 +48,16 @@ export default function WhiteboardPanel({ onClose }: { onClose: () => void }) {
 
   const down = (e: React.PointerEvent) => {
     const p = toBoard(e)
-    if (tool === 'text') { setTextAt(p); setText(''); return }
+    if (tool === 'text') {
+      e.preventDefault()
+      // a click while a text box is open places that text; the next click starts a new one
+      if (textAtRef.current) { commitText(); return }
+      setTextAt(p)
+      setText('')
+      // focus after the browser finishes handling this click, or the click steals focus back
+      setTimeout(() => textInputRef.current?.focus(), 0)
+      return
+    }
     inkRef.current!.setPointerCapture(e.pointerId)
     drawing.current = p
     line(p, p)
@@ -82,15 +82,18 @@ export default function WhiteboardPanel({ onClose }: { onClose: () => void }) {
   }
 
   const commitText = () => {
-    if (textAt && text.trim()) {
-      const c = inkRef.current!.getContext('2d')!
-      c.fillStyle = color
-      c.font = `${20 + size * 5}px VT323, monospace`
-      c.textBaseline = 'top'
-      c.fillText(text, textAt.x, textAt.y)
-      persist()
-    }
-    setTextAt(null); setText('')
+    const at = textAtRef.current
+    const value = textRef.current
+    if (!at) return
+    setTextAt(null)
+    setText('')
+    if (!value.trim()) return
+    const c = inkRef.current!.getContext('2d')!
+    c.fillStyle = color
+    c.font = `${20 + size * 5}px VT323, monospace`
+    c.textBaseline = 'top'
+    c.fillText(value, at.x, at.y)
+    persist()
   }
 
   const clear = () => {
@@ -156,18 +159,21 @@ export default function WhiteboardPanel({ onClose }: { onClose: () => void }) {
         />
         {textAt && (
           <input
-            autoFocus
+            ref={textInputRef}
             className="absolute border-2 border-dashed border-amber bg-[#f6efdf]/90 px-1 font-pixel text-[#2e2940] outline-none"
             style={{ left: textAt.cx, top: textAt.cy, color, fontSize: 14 + size * 2 }}
             value={text}
             onChange={e => setText(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') commitText(); if (e.key === 'Escape') { setTextAt(null); setText('') } }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); commitText() }
+              if (e.key === 'Escape') { e.stopPropagation(); setTextAt(null); setText('') }
+            }}
             onBlur={commitText}
             aria-label="Text to place on the board"
           />
         )}
       </div>
-      <p className="mt-2 text-[17px] text-muted">{tool === 'text' ? 'Click the board, type, then press Enter.' : 'Your board is saved in this browser.'}</p>
+      <p className="mt-2 text-[17px] text-muted">{tool === 'text' ? 'Click the board, type, then press Enter.' : 'Your board is saved to your account.'}</p>
     </Panel>
   )
 }

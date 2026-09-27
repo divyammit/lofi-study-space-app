@@ -13,6 +13,8 @@ import taskRoutes from './routes/tasks.js'
 import noteRoutes from './routes/notes.js'
 import sessionRoutes from './routes/sessions.js'
 import friendRoutes from './routes/friends.js'
+import chatRoutes from './routes/chats.js'
+import { requireAuth } from './auth.js'
 
 const PORT = Number(process.env.PORT) || 3001
 const app = express()
@@ -26,9 +28,10 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN')
   next()
 })
-// the whiteboard route parses its own (larger) body
+// routes that accept images parse their own (larger) bodies
 const json = express.json({ limit: '200kb' })
-app.use((req, res, next) => (req.path === '/api/me/whiteboard' ? next() : json(req, res, next)))
+const bigBody = p => p === '/api/me/whiteboard' || /^\/api\/chats\/[^/]+\/messages$/.test(p)
+app.use((req, res, next) => (bigBody(req.path) && req.method !== 'GET' ? next() : json(req, res, next)))
 app.use(cookieParser())
 
 app.get('/api/health', async (_req, res) => {
@@ -40,6 +43,21 @@ app.use('/api/tasks', taskRoutes)
 app.use('/api/notes', noteRoutes)
 app.use('/api/sessions', sessionRoutes)
 app.use('/api/friends', friendRoutes)
+app.use('/api/chats', chatRoutes)
+
+// STUN/TURN servers for voice & video calls. STUN is free; TURN (optional) relays calls
+// for people whose network blocks direct connections (common on mobile data).
+app.get('/api/rtc-config', requireAuth, (_req, res) => {
+  const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }]
+  if (process.env.TURN_URLS) {
+    iceServers.push({
+      urls: process.env.TURN_URLS.split(',').map(s => s.trim()).filter(Boolean),
+      username: process.env.TURN_USERNAME,
+      credential: process.env.TURN_CREDENTIAL,
+    })
+  }
+  res.json({ iceServers })
+})
 app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not found')))
 
 // serve the built React app (client/dist) from the same server in production

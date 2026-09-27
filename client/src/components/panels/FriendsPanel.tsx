@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { useStore } from '../../lib/store'
+import { useChat } from '../../lib/chat'
 import type { Friend } from '../../lib/types'
 import { Panel, Empty } from '../ui'
 import PixelAvatar from '../PixelAvatar'
 
 export default function FriendsPanel({ onClose, openStreet }: { onClose: () => void; openStreet: () => void }) {
   const { friends, friendsLoaded, sendFriendRequest, acceptFriend, removeFriend, joinRoom, createRoom, inviteFriend, myRoom, timer, startTimer, rooms, toast, account } = useStore()
+  const { startDirect, openChat } = useChat()
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
@@ -47,6 +49,7 @@ export default function FriendsPanel({ onClose, openStreet }: { onClose: () => v
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          <button className="px-solid !px-2 !py-1" onClick={() => startDirect(f.id).then(openChat, say)}>Message</button>
           {f.online && room && !inMyRoom && <button className="px-solid !px-2 !py-1" onClick={() => joinRoom(room.id).then(openStreet, () => {})}>Join</button>}
           {f.online && !room && <button className="px-solid !px-2 !py-1" onClick={() => studyTogether(f)}>{myRoom ? 'Invite' : 'Study together'}</button>}
           {confirmRemove === f.id

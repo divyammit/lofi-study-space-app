@@ -1,20 +1,24 @@
 import type { ReactNode } from 'react'
 import PixelIcon from './PixelIcon'
 
-export function Panel({ title, onClose, actions, children, wide }: { title: string; onClose: () => void; actions?: ReactNode; children: ReactNode; wide?: boolean }) {
+/** `fill` makes the panel full height with a non-scrolling body, for layouts that manage their own scrolling (chat). */
+export function Panel({ title, onClose, actions, children, wide, fill, lead }: { title: string; onClose: () => void; actions?: ReactNode; children: ReactNode; wide?: boolean; fill?: boolean; lead?: ReactNode }) {
   return (
     <section
-      className={`px-panel panel-in flex max-h-full w-full flex-col ${wide ? 'md:w-[min(720px,58vw)]' : 'md:w-[min(560px,46vw)]'}`}
+      className={`px-panel panel-in flex max-h-full w-full flex-col ${fill ? 'h-full' : ''} ${wide ? 'md:w-[min(720px,58vw)]' : 'md:w-[min(560px,46vw)]'}`}
       aria-label={title}
     >
       <header className="flex items-start justify-between gap-3 px-5 pt-4 pb-2">
-        <h2 className="font-title text-[22px] leading-tight tracking-wide uppercase md:text-[26px]">{title}</h2>
+        <div className="flex min-w-0 items-center gap-2">
+          {lead}
+          <h2 className="truncate font-title text-[22px] leading-tight tracking-wide uppercase md:text-[26px]">{title}</h2>
+        </div>
         <button className="px-btn mt-1 shrink-0 text-muted" onClick={onClose} aria-label="Close panel">
           <PixelIcon name="close" size={16} />
         </button>
       </header>
       {actions && <div className="flex flex-wrap gap-x-4 gap-y-1 px-5 pb-2 text-[20px]">{actions}</div>}
-      <div className="px-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">{children}</div>
+      <div className={fill ? 'flex min-h-0 flex-1 flex-col px-3 pb-3 md:px-5' : 'px-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5'}>{children}</div>
     </section>
   )
 }

@@ -19,12 +19,19 @@ import SoundsPanel from './components/panels/SoundsPanel'
 import StatsPanel from './components/panels/StatsPanel'
 import StreetPanel from './components/panels/StreetPanel'
 import FriendsPanel from './components/panels/FriendsPanel'
+import ChatsPanel from './components/panels/ChatsPanel'
+import CallView from './components/CallView'
+import { ChatProvider, useChat } from './lib/chat'
+import { CallProvider } from './lib/call'
 import ProfilePanel from './components/panels/ProfilePanel'
 import SettingsPanel from './components/panels/SettingsPanel'
 
 function Room() {
   const { settings, timer, timeLeft, focusMode, setFocusMode, startTimer, toasts, connected } = useStore()
   const [panel, setPanel] = useState<PanelId | null>(null)
+  const { totalUnread, openSignal } = useChat()
+  // a notification or the Friends panel asked to open a chat
+  useEffect(() => { if (openSignal) setPanel('chats') }, [openSignal])
   const [focusAutoStart, setFocusAutoStart] = useStored('focusAutoStart', true)
   const focusing = timer.running && timer.mode === 'focus'
   // only show "reconnecting" if the connection stays down for a moment
@@ -57,6 +64,7 @@ function Room() {
     sounds: <SoundsPanel onClose={close} />,
     stats: <StatsPanel onClose={close} />,
     street: <StreetPanel onClose={close} />,
+    chats: <ChatsPanel onClose={close} />,
     friends: <FriendsPanel onClose={close} openStreet={() => setPanel('street')} />,
     profile: <ProfilePanel onClose={close} />,
     settings: <SettingsPanel onClose={close} />,
@@ -81,7 +89,7 @@ function Room() {
               )}
             </div>
             <div className="bg-black/35 px-1">
-              <Dock active={panel} onPick={toggle} onFocus={enterFocus} />
+              <Dock active={panel} onPick={toggle} onFocus={enterFocus} badges={{ chats: totalUnread }} />
             </div>
           </header>
 
@@ -101,6 +109,8 @@ function Room() {
         </div>
       )}
 
+      <CallView />
+
       {showOffline && (
         <div className="pointer-events-none absolute bottom-14 left-1/2 z-40 -translate-x-1/2 bg-black/60 px-3 py-1 text-[#ece3d0]" role="status">
           Reconnecting to the server<span className="blink">…</span>
@@ -108,7 +118,7 @@ function Room() {
       )}
 
       {/* toasts */}
-      <div className="pointer-events-none absolute top-20 left-1/2 z-40 flex -translate-x-1/2 flex-col items-center gap-2" aria-live="polite">
+      <div className="pointer-events-none absolute top-20 left-1/2 z-50 flex w-[min(92vw,520px)] -translate-x-1/2 flex-col items-center gap-2" aria-live="polite">
         {toasts.map(t => (
           <div key={t.id} className="px-panel panel-in pointer-events-auto flex items-center gap-3 px-4 py-2 text-center">
             <span>{t.text}</span>
@@ -156,7 +166,11 @@ export default function App() {
   if (phase === 'app' && state) {
     return (
       <AppProvider key={state.user.id} initial={state} onLoggedOut={loggedOut}>
-        <Room />
+        <ChatProvider>
+          <CallProvider>
+            <Room />
+          </CallProvider>
+        </ChatProvider>
       </AppProvider>
     )
   }
