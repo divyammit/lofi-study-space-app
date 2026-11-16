@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
 import { api, ApiError } from './lib/api'
 import type { AppState } from './lib/types'
 import AuthScreen from './components/AuthScreen'
@@ -20,6 +20,10 @@ import StatsPanel from './components/panels/StatsPanel'
 import StreetPanel from './components/panels/StreetPanel'
 import FriendsPanel from './components/panels/FriendsPanel'
 import ChatsPanel from './components/panels/ChatsPanel'
+import ProPanel from './components/panels/ProPanel'
+// the tutor pulls in the Markdown + maths renderer, so it's only downloaded when first opened
+const TutorPanel = lazy(() => import('./components/panels/TutorPanel'))
+import { ProProvider, usePro } from './lib/pro'
 import CallView from './components/CallView'
 import { ChatProvider, useChat } from './lib/chat'
 import { CallProvider } from './lib/call'
@@ -32,6 +36,9 @@ function Room() {
   const { totalUnread, openSignal } = useChat()
   // a notification or the Friends panel asked to open a chat
   useEffect(() => { if (openSignal) setPanel('chats') }, [openSignal])
+  const { plan, proSignal, tutorSignal } = usePro()
+  useEffect(() => { if (proSignal) setPanel('pro') }, [proSignal])
+  useEffect(() => { if (tutorSignal) setPanel('tutor') }, [tutorSignal])
   const [focusAutoStart, setFocusAutoStart] = useStored('focusAutoStart', true)
   const focusing = timer.running && timer.mode === 'focus'
   // only show "reconnecting" if the connection stays down for a moment
@@ -65,6 +72,12 @@ function Room() {
     stats: <StatsPanel onClose={close} />,
     street: <StreetPanel onClose={close} />,
     chats: <ChatsPanel onClose={close} />,
+    tutor: (
+      <Suspense fallback={<div className="px-panel p-5">Opening the tutor<span className="blink">…</span></div>}>
+        <TutorPanel onClose={close} />
+      </Suspense>
+    ),
+    pro: <ProPanel onClose={close} />,
     friends: <FriendsPanel onClose={close} openStreet={() => setPanel('street')} />,
     profile: <ProfilePanel onClose={close} />,
     settings: <SettingsPanel onClose={close} />,
@@ -81,7 +94,7 @@ function Room() {
           {/* top bar */}
           <header className="pointer-events-auto flex flex-col gap-1 px-4 pt-3 md:flex-row md:items-start md:justify-between md:px-6 md:pt-4">
             <div className="flex items-center justify-between gap-3">
-              <div className="font-title text-[22px] text-[#ece3d0] md:text-[28px]" style={{ textShadow: '2px 2px 0 rgba(0,0,0,.6)' }}>Lo-Fi Study Space</div>
+              <div className="font-title text-[22px] text-[#ece3d0] md:text-[28px]" style={{ textShadow: '2px 2px 0 rgba(0,0,0,.6)' }}>Lo-Fi Study Space{plan.pro && <span className="ml-2 align-middle bg-[#f2a65a] px-1.5 text-[14px] text-[#2a1c10] md:text-[16px]" style={{ textShadow: 'none' }}>PRO</span>}</div>
               {focusing && (
                 <div className="flex items-center gap-2 bg-black/50 px-3 py-1 text-[#ece3d0]" role="status">
                   <span className="blink text-[#e8707e]">●</span> Focus session · {fmtClock(timeLeft)}
@@ -166,11 +179,13 @@ export default function App() {
   if (phase === 'app' && state) {
     return (
       <AppProvider key={state.user.id} initial={state} onLoggedOut={loggedOut}>
+        <ProProvider initial={state.plan}>
         <ChatProvider>
           <CallProvider>
             <Room />
           </CallProvider>
         </ChatProvider>
+        </ProProvider>
       </AppProvider>
     )
   }

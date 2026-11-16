@@ -6,11 +6,13 @@ const ITEMS: { id: PanelId; icon: IconName; label: string }[] = [
   { id: 'tasks', icon: 'tasks', label: 'Tasks' },
   { id: 'notes', icon: 'notes', label: 'Notes' },
   { id: 'board', icon: 'board', label: 'Whiteboard' },
+  { id: 'tutor', icon: 'tutor', label: 'Study tutor' },
   { id: 'sounds', icon: 'sounds', label: 'Sounds' },
   { id: 'stats', icon: 'stats', label: 'Analytics' },
   { id: 'street', icon: 'street', label: 'Study street' },
   { id: 'chats', icon: 'chat', label: 'Chats' },
   { id: 'friends', icon: 'friends', label: 'Friends' },
+  { id: 'pro', icon: 'crown', label: 'Pro' },
   { id: 'profile', icon: 'profile', label: 'Profile' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
 ]

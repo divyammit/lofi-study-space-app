@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useStore } from '../../lib/store'
+import { usePro, formatDate } from '../../lib/pro'
 import { computeStats } from '../../lib/stats'
 import { fmtHours } from '../../lib/dates'
 import { SUBJECTS } from '../../lib/defaults'
@@ -8,6 +9,7 @@ import PixelAvatar from '../PixelAvatar'
 
 export default function ProfilePanel({ onClose }: { onClose: () => void }) {
   const { profile, setProfile, sessions, tasks, account } = useStore()
+  const { plan, openPro } = usePro()
   const st = useMemo(() => computeStats(sessions, tasks), [sessions, tasks])
   return (
     <Panel title="Profile" onClose={onClose}>
@@ -15,6 +17,7 @@ export default function ProfilePanel({ onClose }: { onClose: () => void }) {
         <PixelAvatar seed={profile.avatar} size={96} className="shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="text-muted">@{account.username} · member since {new Date(account.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}</div>
+          <button className="px-btn !px-0 text-left" onClick={() => openPro()}>{plan.pro && plan.proUntil ? <span className="text-amber">Pro until {formatDate(plan.proUntil)}</span> : <span className="text-muted">Free plan · <span className="text-amber underline">Upgrade</span></span>}</button>
           <label className="mt-2 block text-muted" htmlFor="uname">Display name</label>
           <input id="uname" className="px-input font-title !text-[20px]" value={profile.name} maxLength={40} placeholder="Your name" onChange={e => setProfile(p => ({ ...p, name: e.target.value }))} />
           <label className="mt-2 block text-muted" htmlFor="fav">Favourite subject</label>

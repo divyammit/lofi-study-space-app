@@ -2,8 +2,8 @@
 
 A cozy pixel-art study room on the web. Create an account, run Pomodoro sessions, keep a Kanban
 board and notes, sketch on a whiteboard, mix ambient sounds, add friends, chat in groups and direct
-messages, hop on voice/video calls with screen sharing and a shared whiteboard, and study together
-in live public rooms on Study Street.
+messages, hop on voice/video calls with screen sharing and a shared whiteboard, study together in live public
+rooms on Study Street, ask an AI study tutor, and upgrade to Pro with Razorpay.
 
 DBW project, JIIT Noida, Odd Semester 2026-27: Labhay Jain, Shaurya Srivastava, Divyam Mittal, Krishna Mittal.
 
@@ -16,6 +16,8 @@ DBW project, JIIT Noida, Odd Semester 2026-27: Labhay Jain, Shaurya Srivastava, 
 | Database | PostgreSQL (via `pg`, plain parameterised SQL, no ORM) |
 | Real-time | Socket.IO (presence, study rooms, invites, chat delivery, call signalling) |
 | Calls | WebRTC (browser-to-browser audio/video, mesh up to 8 people) |
+| AI tutor | Gemini, Claude or any OpenAI-compatible API, streamed with Server-Sent Events; answers rendered with react-markdown + KaTeX |
+| Payments | Razorpay Standard Checkout (orders API, HMAC-SHA256 signature verification, webhook) |
 | Auth | bcrypt password hashes + JWT in an httpOnly cookie |
 | Canvas / audio | HTML Canvas (room scene, whiteboard), Web Audio API (generated sounds) |
 
@@ -35,6 +37,7 @@ lofi-study-space/
 │       ├── lib/store.tsx     app state, Pomodoro logic, Socket.IO connection
 │       ├── lib/chat.tsx      chats, messages, unread counts, typing
 │       ├── lib/call.tsx      WebRTC calls, screen share, shared board sync
+│       ├── lib/pro.tsx       Pro plan state and Razorpay checkout
 │       ├── scene/            the pixel-art room (canvas)
 │       └── components/       AuthScreen, HomeCard, Dock, panels/*
 └── server/
@@ -44,7 +47,9 @@ lofi-study-space/
         ├── db.js             Postgres pool + migration
         ├── auth.js           JWT cookie helpers + requireAuth middleware
         ├── realtime.js       Socket.IO: presence, rooms, invites, chat, calls
-        └── routes/           auth, me, tasks, notes, sessions, friends, chats
+        ├── ai.js             AI providers (Gemini / Claude / OpenAI-compatible), streaming
+        ├── plans.js          Free vs Pro limits, prices, premium themes
+        └── routes/           auth, me, tasks, notes, sessions, friends, chats, ai, billing
 ```
 
 ## Run it on your computer
@@ -82,7 +87,10 @@ users ─┬─< tasks
        ├─< study_rooms (host_id)
        ├─< room_members >── study_rooms
        ├─< chat_members >── chats ─< messages
-       └─< messages (user_id)
+       ├─< messages (user_id)
+       ├─< payments
+       ├─< ai_usage
+       └─< ai_conversations ─< ai_messages
 ```
 
 - **users**: account, profile (display name, avatar, favourite subject), settings as JSONB, saved whiteboard.
@@ -95,6 +103,15 @@ users ─┬─< tasks
   unique `direct_key` (the two user ids, sorted) so two people can only ever have one. `chat_members.last_read_at`
   gives unread counts (`count(*) … WHERE created_at > last_read_at`). CHECK constraints keep direct/group rows consistent.
   Groups always keep an admin: when the last admin leaves, the oldest member is promoted.
+- **payments** + `users.pro_until`: one row per Razorpay order. It becomes `paid` only after the server checks
+  Razorpay's signature; then `pro_until` is extended inside a transaction that locks the payment row
+  (`SELECT … FOR UPDATE`), so a payment can't be applied twice even if `/verify` and the webhook race.
+  A CHECK ties `status = 'paid'` to `paid_at` being set; order and payment ids are UNIQUE.
+- **ai_conversations / ai_messages**: the tutor's saved chats, with optional attachments (photo, whiteboard, or a note id)
+  and token counts per answer.
+- **ai_usage** `(user_id, day)`: the daily question counter. The limit is enforced in one atomic statement:
+  `INSERT … ON CONFLICT DO UPDATE SET questions = questions + 1 WHERE questions < limit RETURNING …`.
+  No row back means the limit is reached. A question that gets no answer is refunded.
 - Analytics (streaks, weekly chart, best day, top subject) are computed from `study_sessions`.
 
 ## REST API
@@ -127,6 +144,13 @@ All routes except signup/login need the login cookie. Bodies are JSON.
 | PATCH | `/api/chats/:id` | `{name}` rename (admins) |
 | POST | `/api/chats/:id/members` | `{userIds}` add friends (admins) |
 | DELETE | `/api/chats/:id/members/:userId` | leave, or remove someone (admins) |
+| GET | `/api/ai/status` | tutor on/off, provider, today's usage and limit |
+| POST | `/api/ai/ask` | `{text, conversationId?, attachment?}` streams the answer as Server-Sent Events (`meta`, `delta`, `done`, `error`) |
+| GET / DELETE | `/api/ai/conversations[/:id]` | list, open, delete tutor conversations |
+| GET | `/api/billing` | plans, prices, Pro status, payment history |
+| POST | `/api/billing/orders` | `{planId}` creates a Razorpay order |
+| POST | `/api/billing/verify` | checks the payment signature, then activates Pro |
+| POST | `/api/billing/webhook` | Razorpay → server backup (signature over the raw body) |
 | GET | `/api/rtc-config` | STUN/TURN servers for calls (see `server/src/rtc.js`) |
 | GET | `/api/health` | checks the database connection |
 
@@ -156,6 +180,16 @@ to about 8 people. Each connection has one audio and one video slot, so turning 
 sharing your screen just swaps the track in the video slot, with no renegotiation. The shared
 whiteboard sends tiny line segments over Socket.IO; the server keeps them so late joiners see the board.
 
+## Free vs Pro
+| | Free | Pro |
+|---|---|---|
+| AI tutor questions per day | 10 | 150 (fair use) |
+| Ask about a photo, your whiteboard or your notes | no | yes |
+| Room themes | Rainy night | all four |
+| Everything else (timer, tasks, notes, chats, calls, Study Street) | yes | yes |
+
+Limits live in `server/src/plans.js` and are enforced on the server, not just hidden in the UI.
+
 ## Security notes
 
 - Passwords are hashed with bcrypt (cost 11); login responses don't reveal whether a username exists.
@@ -163,6 +197,9 @@ whiteboard sends tiny line segments over Socket.IO; the server keeps them so lat
 - Every query is parameterised, and every row access is scoped by `user_id`.
 - Login and signup are rate-limited (30 attempts per 15 minutes per IP).
 - Inputs are length- and type-checked on the server; request bodies are size-limited.
+- AI and Razorpay secret keys exist only in the server's environment; the browser only ever gets the public Razorpay Key ID.
+- Pro is granted only after the server verifies Razorpay's HMAC signature with a timing-safe comparison, using an order id from our own database. A browser can't fake a payment.
+- The tutor's answers are rendered with react-markdown, which never renders raw HTML, so an answer can't inject scripts.
 
 ## Known limits (good "future scope" material)
 
@@ -170,5 +207,7 @@ whiteboard sends tiny line segments over Socket.IO; the server keeps them so lat
 - No email verification or password reset yet (needs an email provider).
 - Calls are limited to 8 people (mesh). Bigger calls would need a media server (an SFU such as LiveKit or mediasoup).
 - Without a TURN relay, calls on strict networks (mobile data, many campus Wi-Fis) connect but carry no audio/video. The app detects this after ~20 s and says so. See DEPLOY.md, "Making calls reliable".
-- Chat images are stored in the database as data URLs; at larger scale they'd move to object storage (S3, R2).
+- Chat and tutor images are stored in the database as data URLs; at larger scale they'd move to object storage (S3, R2).
+- Pro is a one-time 30/365-day purchase; automatic renewal would use Razorpay Subscriptions.
+- No refunds flow or invoices yet; going live needs Razorpay KYC plus privacy, terms and refund pages.
 - Ambient sounds are generated in the browser, not recordings.

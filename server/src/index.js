@@ -14,6 +14,9 @@ import noteRoutes from './routes/notes.js'
 import sessionRoutes from './routes/sessions.js'
 import friendRoutes from './routes/friends.js'
 import chatRoutes from './routes/chats.js'
+import aiRoutes from './routes/ai.js'
+import billingRoutes, { webhook as billingWebhook } from './routes/billing.js'
+import { logAiSetup } from './ai.js'
 import { requireAuth } from './auth.js'
 import { iceServers, logRtcSetup } from './rtc.js'
 
@@ -31,7 +34,10 @@ app.use((req, res, next) => {
 })
 // routes that accept images parse their own (larger) bodies
 const json = express.json({ limit: '200kb' })
-const bigBody = p => p === '/api/me/whiteboard' || /^\/api\/chats\/[^/]+\/messages$/.test(p)
+// Razorpay's webhook must see the raw body to check its signature, so it's mounted before any JSON parsing
+app.post('/api/billing/webhook', ...billingWebhook)
+
+const bigBody = p => p === '/api/me/whiteboard' || p === '/api/ai/ask' || /^\/api\/chats\/[^/]+\/messages$/.test(p)
 app.use((req, res, next) => (bigBody(req.path) && req.method !== 'GET' ? next() : json(req, res, next)))
 app.use(cookieParser())
 
@@ -45,6 +51,8 @@ app.use('/api/notes', noteRoutes)
 app.use('/api/sessions', sessionRoutes)
 app.use('/api/friends', friendRoutes)
 app.use('/api/chats', chatRoutes)
+app.use('/api/ai', aiRoutes)
+app.use('/api/billing', billingRoutes)
 
 // STUN/TURN servers for voice & video calls (see rtc.js)
 app.get('/api/rtc-config', requireAuth, wrap(async (_req, res) => {
@@ -76,4 +84,6 @@ await realtime.init(server)
 server.listen(PORT, () => {
   console.log(`Lo-Fi Study Space server on http://localhost:${PORT}`)
   logRtcSetup()
+  logAiSetup()
+  console.log(process.env.RAZORPAY_KEY_ID ? `[billing] Razorpay ${process.env.RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'TEST' : 'LIVE'} mode.` : '[billing] Razorpay not configured: Pro checkout disabled. See DEPLOY.md.')
 })

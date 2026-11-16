@@ -123,3 +123,58 @@ CREATE TABLE IF NOT EXISTS room_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS room_messages_room_time ON room_messages (room_id, created_at DESC);
+
+-- ---------- Pro plan & payments ----------
+-- a user is Pro while pro_until is in the future; buying again extends it
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pro_until TIMESTAMPTZ;
+
+-- one row per Razorpay order; becomes 'paid' only after the server verifies Razorpay's signature
+CREATE TABLE IF NOT EXISTS payments (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan                VARCHAR(20) NOT NULL CHECK (plan IN ('pro_month', 'pro_year')),
+  amount              INTEGER NOT NULL CHECK (amount > 0),        -- in paise (₹1 = 100)
+  currency            CHAR(3) NOT NULL DEFAULT 'INR',
+  status              VARCHAR(8) NOT NULL DEFAULT 'created' CHECK (status IN ('created', 'paid', 'failed')),
+  razorpay_order_id   VARCHAR(40) NOT NULL UNIQUE,
+  razorpay_payment_id VARCHAR(40) UNIQUE,
+  pro_until_after     TIMESTAMPTZ,                                -- the user's new expiry once this payment applied
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  paid_at             TIMESTAMPTZ,
+  CHECK ((status = 'paid') = (paid_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS payments_user_time ON payments (user_id, created_at DESC);
+
+-- ---------- AI study tutor ----------
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title      VARCHAR(80) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_conversations_user_time ON ai_conversations (user_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id UUID NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+  role            VARCHAR(9) NOT NULL CHECK (role IN ('user', 'assistant')),
+  content         TEXT NOT NULL,
+  -- what the student attached to a question (Pro): a photo, their whiteboard, or one of their notes
+  attachment_kind VARCHAR(10) CHECK (attachment_kind IN ('image', 'whiteboard', 'note')),
+  attachment      TEXT,                                           -- image data URL, or the note's title
+  note_id         VARCHAR(40),                                    -- the note used (it may be deleted later)
+  tokens_in       INTEGER,
+  tokens_out      INTEGER,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK ((attachment_kind IS NULL) = (attachment IS NULL))
+);
+CREATE INDEX IF NOT EXISTS ai_messages_conv_time ON ai_messages (conversation_id, created_at);
+
+-- questions asked per user per day: enforces the free / Pro daily limits
+CREATE TABLE IF NOT EXISTS ai_usage (
+  user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day       DATE NOT NULL,
+  questions INTEGER NOT NULL DEFAULT 0 CHECK (questions >= 0),
+  PRIMARY KEY (user_id, day)
+);

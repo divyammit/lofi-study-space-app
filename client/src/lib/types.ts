@@ -59,7 +59,7 @@ export type SoundMix = Record<SoundId, { on: boolean; vol: number }>
 
 export type PanelId =
   | 'timer' | 'tasks' | 'notes' | 'board' | 'sounds'
-  | 'stats' | 'street' | 'chats' | 'friends' | 'profile' | 'settings'
+  | 'stats' | 'street' | 'chats' | 'friends' | 'profile' | 'settings' | 'tutor' | 'pro'
 
 export interface Account {
   id: string
@@ -69,8 +69,14 @@ export interface Account {
 }
 
 /** What the server returns after login / signup / GET /api/auth/me */
+export interface Plan {
+  pro: boolean
+  proUntil: number | null
+}
+
 export interface AppState {
   user: Account
+  plan: Plan
   profile: Profile
   settings: Partial<Settings>
   whiteboard: string | null
@@ -184,3 +190,37 @@ export interface Chat {
 /** One stroke segment on the shared call whiteboard, in 0..1 board coordinates. */
 export interface BoardStroke { p: [number, number, number, number]; c: string; w: number; e: boolean }
 export interface BoardState { strokes: BoardStroke[]; bg: string | null; openedBy: string }
+
+export interface TutorMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  attachmentKind: 'image' | 'whiteboard' | 'note' | null
+  attachment: string | null
+  createdAt: number
+  streaming?: boolean
+}
+
+export interface TutorConversation { id: string; title: string; updatedAt: number; messages: number }
+
+export interface TutorStatus {
+  configured: boolean
+  provider: string | null
+  model: string | null
+  plan: Plan
+  usage: { used: number; limit: number }
+  attachments: boolean
+  freeLimit: number
+  proLimit: number
+}
+
+export interface BillingPlan { id: 'pro_month' | 'pro_year'; name: string; days: number; amount: number; currency: string }
+export interface PaymentRecord { id: string; plan: string; amount: number; currency: string; status: 'paid' | 'failed'; paymentId: string | null; createdAt: number; paidAt: number | null; proUntilAfter: number | null }
+export interface BillingInfo {
+  configured: boolean
+  testMode: boolean
+  plan: Plan
+  plans: BillingPlan[]
+  history: PaymentRecord[]
+  limits: { freeDaily: number; proDaily: number }
+}

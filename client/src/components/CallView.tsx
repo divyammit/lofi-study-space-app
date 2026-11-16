@@ -7,6 +7,9 @@ import PixelAvatar from './PixelAvatar'
 import PixelIcon, { type IconName } from './PixelIcon'
 import SharedBoard from './SharedBoard'
 
+/** Shown on the call screen so you can confirm which version is deployed. */
+export const CALL_VERSION = 'calls v3'
+
 const STATE_LABEL: Partial<Record<RTCPeerConnectionState, string>> = {
   new: 'Connecting…',
   connecting: 'Connecting…',
@@ -19,24 +22,37 @@ function Tile({ stream, muted, mirrored, name, avatar, showVideo, micOff, screen
   showVideo: boolean; micOff: boolean; screen?: boolean; compact?: boolean; state?: RTCPeerConnectionState
 }) {
   const ref = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
   const [blocked, setBlocked] = useState(false)
   useEffect(() => {
+    // Picture and sound go to separate players. A <video> with a camera track that sends no frames
+    // (camera off) never starts playing, which would also silence the audio in it.
     const v = ref.current
-    if (!v) return
-    if (v.srcObject !== stream) v.srcObject = stream
-    // browsers may refuse to start sound without a click; then we show a "tap to hear" button
-    if (stream) v.play().then(() => setBlocked(false), () => { if (!muted) setBlocked(true) })
+    if (v) {
+      const vt = stream?.getVideoTracks() ?? []
+      const vs = vt.length ? new MediaStream(vt) : null
+      v.srcObject = vs
+      if (vs) v.play().catch(() => {})
+    }
+    const a = audioRef.current
+    if (a && !muted) {
+      const at = stream?.getAudioTracks() ?? []
+      const as = at.length ? new MediaStream(at) : null
+      a.srcObject = as
+      // browsers may refuse to start sound without a click; then we show a "tap to hear" button
+      if (as) a.play().then(() => setBlocked(false), () => setBlocked(true))
+    }
   }, [stream, muted])
-  const unblock = () => { ref.current?.play().then(() => setBlocked(false), () => {}) }
+  const unblock = () => { audioRef.current?.play().then(() => setBlocked(false), () => {}) }
   const label = state ? STATE_LABEL[state] : undefined
   return (
     <div className={`relative overflow-hidden bg-[#141626] ${compact ? 'aspect-video' : 'aspect-video min-h-0'}`}>
-      {/* the video element also plays the person's audio, so it stays mounted even when hidden */}
+      {!muted && <audio ref={audioRef} autoPlay />}
       <video
         ref={ref}
         autoPlay
         playsInline
-        muted={muted}
+        muted
         className={`h-full w-full ${screen ? 'object-contain' : 'object-cover'} ${showVideo ? '' : 'opacity-0'}`}
         style={mirrored ? { transform: 'scaleX(-1)' } : undefined}
       />
@@ -78,6 +94,15 @@ function CtrlButton({ icon, label, onClick, active = false, danger = false }: { 
 
 export default function CallView() {
   const c = useCall()
+  const inCall = !!c.call
+  // if a browser blocked sound from starting, start it on the next click or key press anywhere
+  useEffect(() => {
+    if (!inCall) return
+    const retry = () => document.querySelectorAll('audio').forEach(a => { if (a.paused && a.srcObject) a.play().catch(() => {}) })
+    document.addEventListener('pointerdown', retry, true)
+    document.addEventListener('keydown', retry, true)
+    return () => { document.removeEventListener('pointerdown', retry, true); document.removeEventListener('keydown', retry, true) }
+  }, [inCall])
   const { chats, chatTitle } = useChat()
   const { profile, now, whiteboard, rooms } = useStore()
   if (!c.call) return null
@@ -155,6 +180,7 @@ export default function CallView() {
           <span className="blink text-moss">●</span>
           <h2 className="min-w-0 flex-1 truncate font-title text-[18px] md:text-[22px]">{title}</h2>
           <span className="text-muted">{elapsed} · {people} in call</span>
+          <span className="text-[13px] text-muted/70" title="Version of the call feature">{CALL_VERSION}</span>
           <button className="px-btn" onClick={() => c.setExpanded(false)} aria-label="Minimise call" title="Minimise (keep talking while using the room)">
             <PixelIcon name="minimize" size={18} />
           </button>

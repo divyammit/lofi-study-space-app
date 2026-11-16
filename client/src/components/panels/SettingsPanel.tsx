@@ -2,18 +2,21 @@ import { useState } from 'react'
 import { useStore } from '../../lib/store'
 import type { AnimationLevel, ThemeId } from '../../lib/types'
 import { Panel, Check, Seg, SectionTitle } from '../ui'
+import { usePro } from '../../lib/pro'
+import PixelIcon from '../PixelIcon'
 
-const THEMES: { value: ThemeId; label: string }[] = [
+const THEMES: { value: ThemeId; label: string; pro?: boolean }[] = [
   { value: 'rainy', label: 'Rainy night' },
-  { value: 'library', label: 'Cozy library' },
-  { value: 'coffee', label: 'Coffee shop' },
-  { value: 'sunset', label: 'Sunset bedroom' },
+  { value: 'library', label: 'Cozy library', pro: true },
+  { value: 'coffee', label: 'Coffee shop', pro: true },
+  { value: 'sunset', label: 'Sunset bedroom', pro: true },
 ]
 
 export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { settings, setSettings, toast, account, logout, deleteAccount } = useStore()
   const [deleting, setDeleting] = useState(false)
   const [password, setPassword] = useState('')
+  const { plan, openPro } = usePro()
   const set = <K extends keyof typeof settings>(k: K, v: (typeof settings)[K]) => setSettings(s => ({ ...s, [k]: v }))
   const num = (k: 'focusMin' | 'shortMin' | 'longMin' | 'longEvery' | 'dailyGoalMin', label: string, max: number) => (
     <label className="flex flex-col gap-1">
@@ -26,9 +29,9 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
       <SectionTitle>Room</SectionTitle>
       <div className="grid grid-cols-2 gap-2">
         {THEMES.map(t => (
-          <button key={t.value} onClick={() => set('theme', t.value)} aria-pressed={settings.theme === t.value}
+          <button key={t.value} onClick={() => (t.pro && !plan.pro ? openPro('Unlock the Cozy library, Coffee shop and Sunset bedroom rooms with Pro.') : set('theme', t.value))} aria-pressed={settings.theme === t.value}
             className={`px-card p-3 text-left ${settings.theme === t.value ? 'outline-2 outline-amber' : 'hover:bg-card-hi'}`}>
-            <span className="text-amber">{settings.theme === t.value ? '[X] ' : '[ ] '}</span>{t.label}
+            <span className="text-amber">{settings.theme === t.value ? '[X] ' : '[ ] '}</span>{t.label}{t.pro && !plan.pro && <span className="ml-2 inline-flex items-center gap-1 text-[15px] text-amber"><PixelIcon name="lock" size={11} />PRO</span>}
           </button>
         ))}
       </div>

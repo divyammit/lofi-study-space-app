@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../../lib/store'
+import { usePro } from '../../lib/pro'
 import { uid } from '../../lib/storage'
 import { Panel, Empty } from '../ui'
 
 export default function NotesPanel({ onClose }: { onClose: () => void }) {
   const { notes, setNotes, toast } = useStore()
+  const { plan, openPro, openTutor } = usePro()
   const [openId, setOpenId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [subject, setSubject] = useState<string>('All')
@@ -34,6 +36,7 @@ export default function NotesPanel({ onClose }: { onClose: () => void }) {
         onClose={onClose}
         actions={<>
           <button className="px-btn" onClick={() => setOpenId(null)}>[‹] All notes</button>
+          <button className="px-btn" onClick={() => (plan.pro ? openTutor({ text: 'Quiz me on this note: ask me one question at a time.', noteId: open.id }) : openPro('Let the AI tutor explain or quiz you on your own notes with Pro.'))}>[*] Ask tutor{plan.pro ? '' : ' (Pro)'}</button>
           <button className="px-btn hover:!text-rose" onClick={() => { setNotes(ns => ns.filter(n => n.id !== open.id)); setOpenId(null); toast('Note deleted.') }}>[x] Delete</button>
         </>}
       >

@@ -5,6 +5,7 @@ import { ms, q } from '../db.js'
 import { HttpError, int, str, wrap } from '../util.js'
 import { clearAuthCookie, requireAuth } from '../auth.js'
 import { realtime } from '../realtime.js'
+import { PRO_THEMES, planOf } from '../plans.js'
 
 /** Everything the React app needs after login, in one round trip. */
 export async function loadState(userId) {
@@ -22,10 +23,14 @@ export async function loadState(userId) {
     q(`SELECT id, day AS date, ${ms('started_at')} AS start, minutes, subject FROM study_sessions WHERE user_id = $1 ORDER BY started_at`, [userId]),
   ])
   const clean = rows => rows.map(r => Object.fromEntries(Object.entries(r).filter(([, v]) => v !== null)))
+  const plan = await planOf(userId)
+  const settings = { ...user.settings }
+  if (!plan.pro && PRO_THEMES.includes(settings.theme)) settings.theme = 'rainy' // Pro ended
   return {
     user: { id: user.id, username: user.username, email: user.email, createdAt: user.created_at },
     profile: { name: user.display_name, avatar: user.avatar, favSubject: user.fav_subject },
-    settings: user.settings,
+    settings,
+    plan,
     whiteboard: user.whiteboard,
     tasks: clean(tasks.rows),
     notes: notes.rows,
@@ -49,6 +54,7 @@ router.put('/settings', wrap(async (req, res) => {
   const s = req.body.settings
   if (!s || typeof s !== 'object' || Array.isArray(s)) throw new HttpError(400, 'settings must be an object')
   if (JSON.stringify(s).length > 4000) throw new HttpError(400, 'settings are too large')
+  if (PRO_THEMES.includes(s.theme) && !(await planOf(req.userId)).pro) s.theme = 'rainy' // premium themes need Pro
   await q(`UPDATE users SET settings = $2 WHERE id = $1`, [req.userId, s])
   res.json({ ok: true })
 }))

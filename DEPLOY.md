@@ -193,6 +193,71 @@ is usually plenty, but keep an eye on the provider's usage page.
 
 Calls also need **https** (browsers only allow microphone and camera on secure sites). Render gives you https automatically.
 
+## AI study tutor
+
+The tutor needs an API key from one AI provider. Add it on Render → Environment and redeploy.
+The server's log then says `[ai] Study tutor using ...`. Without a key, the Tutor panel explains it isn't switched on.
+
+### Option A: Google Gemini (free tier, no card needed)
+1. Go to **aistudio.google.com**, sign in with a Google account, and click **Get API key → Create API key**.
+2. Copy the key.
+3. On Render, add `GEMINI_API_KEY` = the key.
+
+The default model is `gemini-3.5-flash-lite`. To use another one, add `GEMINI_MODEL`.
+Google changes free-tier limits often (they've been cut more than once), so check your project's limits in AI Studio.
+When the free quota runs out, students see "The AI service is busy or its usage limit was reached" and the question isn't counted against them.
+
+### Option B: Anthropic Claude (paid per use)
+Create a key at **console.anthropic.com** → API Keys, then add `ANTHROPIC_API_KEY` on Render.
+Default model: `claude-haiku-5-5`. Override with `ANTHROPIC_MODEL`.
+
+### Option C: OpenAI or an OpenAI-compatible service (Groq, OpenRouter, ...)
+Add `OPENAI_API_KEY` and `OPENAI_MODEL`, and for non-OpenAI services `OPENAI_BASE_URL`
+(for example `https://api.groq.com/openai/v1`). Check the provider's docs for its exact base URL and model names.
+
+If more than one key is set, add `AI_PROVIDER` = `gemini`, `anthropic` or `openai` to choose.
+
+### Daily limits
+| Key | Default | Meaning |
+|---|---|---|
+| `AI_FREE_DAILY` | 10 | Questions per day on the Free plan |
+| `AI_PRO_DAILY` | 150 | Fair-use questions per day on Pro |
+| `APP_TIMEZONE` | Asia/Kolkata | Limits reset at midnight in this timezone |
+
+## Payments (Razorpay, for Pro)
+
+### 1. Get test keys (no real money)
+1. Sign up at **razorpay.com** and open the **Dashboard**.
+2. Make sure the **Test Mode** toggle (top of the dashboard) is on.
+3. Go to **Account & Settings → API Keys → Generate Key** (in some layouts: Settings → API Keys).
+   You get a **Key ID** starting with `rzp_test_` and a **Key Secret**. The secret is shown only once, so copy it now.
+4. On Render, add:
+
+| Key | Value |
+|---|---|
+| `RAZORPAY_KEY_ID` | the Key ID (`rzp_test_...`) |
+| `RAZORPAY_KEY_SECRET` | the Key Secret |
+
+The log then says `[billing] Razorpay TEST mode.` The Pro panel shows test card details:
+card `4100 2800 0000 1007`, any future expiry, any CVV, OTP `1234`, or UPI `success@razorpay`.
+These come from Razorpay's docs and may change; their **Test integration** page lists the current ones.
+
+### 2. Optional: webhook (backup if a student closes the tab right after paying)
+In the Razorpay Dashboard → **Webhooks → Add New Webhook**:
+- URL: `https://<your-service>.onrender.com/api/billing/webhook`
+- Secret: make up a long random string
+- Events: `payment.captured` and `payment.failed`
+
+Then add `RAZORPAY_WEBHOOK_SECRET` = that same string on Render.
+
+### 3. Prices
+`PRO_MONTH_PRICE_INR` (default 99) and `PRO_YEAR_PRICE_INR` (default 799).
+
+### Going live (real money)
+Live keys (`rzp_live_...`) need Razorpay to activate your account, which involves KYC (PAN, bank account, and so on).
+Requirements for individuals and students change, so check Razorpay's current activation rules. Before charging real
+money you also need a Privacy Policy, Terms and a refund policy page. For a class project, test mode is enough.
+
 ## Troubleshooting
 
 | Symptom | Likely fix |
@@ -207,4 +272,8 @@ Calls also need **https** (browsers only allow microphone and camera on secure s
 | Call connects but no sound/video, tiles say "Can't connect" | A network blocks direct calls; add a TURN relay (see "Making calls reliable") |
 | Tile says "Tap to hear …" | The browser blocked sound until you click; tap the tile once |
 | "Your microphone is blocked" | Click the lock/camera icon in the browser's address bar and allow microphone (and camera) for the site |
+| Tutor says it isn't switched on | No AI key on Render; see "AI study tutor" |
+| Tutor: "rejected the server's API key" | The key is wrong or was revoked; create a new one |
+| Pro panel: "Payments aren't switched on" | Add `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET` |
+| Razorpay window doesn't open | An ad-blocker is blocking checkout.razorpay.com; allow it for the site |
 | Screen share button missing | Phones don't support screen sharing in the browser; use a laptop |
