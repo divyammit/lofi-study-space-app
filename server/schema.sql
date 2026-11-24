@@ -178,3 +178,10 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   questions INTEGER NOT NULL DEFAULT 0 CHECK (questions >= 0),
   PRIMARY KEY (user_id, day)
 );
+
+-- which gateway handled a payment: Razorpay, or the built-in demo gateway (no real money)
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider VARCHAR(10) NOT NULL DEFAULT 'razorpay';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS method VARCHAR(10);   -- card / upi, as reported by the gateway
+DO $$ BEGIN
+  ALTER TABLE payments ADD CONSTRAINT payments_provider_chk CHECK (provider IN ('razorpay', 'demo'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;

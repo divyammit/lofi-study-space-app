@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useRef, useState, type ReactNod
 import { api } from './api'
 import { useStore } from './store'
 import type { BillingInfo, Plan } from './types'
+import DemoCheckout, { type DemoOrder } from '../components/DemoCheckout'
 
 /** Prefilled question when something else opens the tutor (e.g. "Quiz me on this note"). */
 export interface TutorPrefill { text: string; noteId?: string }
@@ -57,6 +58,7 @@ export function ProProvider({ initial, children }: { initial: Plan; children: Re
   const [billing, setBilling] = useState<BillingInfo | null>(null)
   const [checkingOut, setCheckingOut] = useState(false)
   const [proReason, setProReason] = useState<string | null>(null)
+  const [demo, setDemo] = useState<{ order: DemoOrder; resolve: (ok: boolean) => void } | null>(null)
   const [proSignal, setProSignal] = useState(0)
   const [tutorSignal, setTutorSignal] = useState(0)
   const prefill = useRef<TutorPrefill | null>(null)
@@ -74,9 +76,13 @@ export function ProProvider({ initial, children }: { initial: Plan; children: Re
   const checkout = useCallback(async (planId: string) => {
     setCheckingOut(true)
     try {
-      const order = await api<{ keyId: string; orderId: string; amount: number; currency: string; planName: string; prefill: { name: string; email: string } }>(
+      const order = await api<{ provider: 'razorpay' | 'demo'; keyId: string | null; orderId: string; amount: number; currency: string; planName: string; prefill: { name: string; email: string } }>(
         '/api/billing/orders', { body: { planId } },
       )
+      if (order.provider === 'demo') {
+        // built-in demo gateway: same order -> pay -> verify flow, simulated checkout window
+        return await new Promise<boolean>(resolve => setDemo({ order: { ...order, planId }, resolve }))
+      }
       try { await loadCheckout() } catch {
         toast("Couldn't load Razorpay's payment window. Check your internet connection or turn off any ad-blocker for this site.")
         void api('/api/billing/failed', { body: { orderId: order.orderId } }).catch(() => {})
@@ -131,6 +137,14 @@ export function ProProvider({ initial, children }: { initial: Plan; children: Re
     }
   }, [toast, loadBilling])
 
+  /** Demo checkout hands its gateway response here, exactly like Razorpay's handler does. */
+  const verifyDemo = useCallback(async (resp: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
+    const r = await api<{ ok: boolean; plan: Plan }>('/api/billing/verify', { body: resp })
+    setPlan(r.plan)
+    void loadBilling()
+    return r.plan
+  }, [loadBilling])
+
   const openPro = useCallback((reason?: string) => {
     setProReason(reason ?? null)
     setProSignal(n => n + 1)
@@ -148,6 +162,20 @@ export function ProProvider({ initial, children }: { initial: Plan; children: Re
   return (
     <Ctx.Provider value={{ plan, setPlan, billing, loadBilling, checkout, checkingOut, openPro, proReason, proSignal, openTutor, takeTutorPrefill, tutorSignal }}>
       {children}
+      {demo && (
+        <DemoCheckout
+          order={demo.order}
+          verify={verifyDemo}
+          onClose={(paid, plan) => {
+            const d = demo
+            setDemo(null)
+            if (paid && plan?.proUntil) toast(`Payment successful. You're Pro until ${formatDate(plan.proUntil)}.`)
+            else if (!paid) toast('Payment cancelled. You were not charged.')
+            void loadBilling()
+            d.resolve(paid)
+          }}
+        />
+      )}
     </Ctx.Provider>
   )
 }

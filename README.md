@@ -17,7 +17,7 @@ DBW project, JIIT Noida, Odd Semester 2026-27: Labhay Jain, Shaurya Srivastava, 
 | Real-time | Socket.IO (presence, study rooms, invites, chat delivery, call signalling) |
 | Calls | WebRTC (browser-to-browser audio/video, mesh up to 8 people) |
 | AI tutor | Gemini, Claude or any OpenAI-compatible API, streamed with Server-Sent Events; answers rendered with react-markdown + KaTeX |
-| Payments | Razorpay Standard Checkout (orders API, HMAC-SHA256 signature verification, webhook) |
+| Payments | Razorpay Standard Checkout (orders API, HMAC-SHA256 signature verification, webhook), or a built-in demo gateway when no keys are set |
 | Auth | bcrypt password hashes + JWT in an httpOnly cookie |
 | Canvas / audio | HTML Canvas (room scene, whiteboard), Web Audio API (generated sounds) |
 
@@ -103,7 +103,7 @@ users ─┬─< tasks
   unique `direct_key` (the two user ids, sorted) so two people can only ever have one. `chat_members.last_read_at`
   gives unread counts (`count(*) … WHERE created_at > last_read_at`). CHECK constraints keep direct/group rows consistent.
   Groups always keep an admin: when the last admin leaves, the oldest member is promoted.
-- **payments** + `users.pro_until`: one row per Razorpay order. It becomes `paid` only after the server checks
+- **payments** + `users.pro_until` (`provider` = razorpay or demo, `method` = card or upi): one row per Razorpay order. It becomes `paid` only after the server checks
   Razorpay's signature; then `pro_until` is extended inside a transaction that locks the payment row
   (`SELECT … FOR UPDATE`), so a payment can't be applied twice even if `/verify` and the webhook race.
   A CHECK ties `status = 'paid'` to `paid_at` being set; order and payment ids are UNIQUE.
@@ -149,6 +149,7 @@ All routes except signup/login need the login cookie. Bodies are JSON.
 | GET / DELETE | `/api/ai/conversations[/:id]` | list, open, delete tutor conversations |
 | GET | `/api/billing` | plans, prices, Pro status, payment history |
 | POST | `/api/billing/orders` | `{planId}` creates a Razorpay order |
+| POST | `/api/billing/demo/pay` | demo gateway only: "processes" a test payment and returns a signed payment id |
 | POST | `/api/billing/verify` | checks the payment signature, then activates Pro |
 | POST | `/api/billing/webhook` | Razorpay → server backup (signature over the raw body) |
 | GET | `/api/rtc-config` | STUN/TURN servers for calls (see `server/src/rtc.js`) |

@@ -215,9 +215,10 @@ export interface TutorStatus {
 }
 
 export interface BillingPlan { id: 'pro_month' | 'pro_year'; name: string; days: number; amount: number; currency: string }
-export interface PaymentRecord { id: string; plan: string; amount: number; currency: string; status: 'paid' | 'failed'; paymentId: string | null; createdAt: number; paidAt: number | null; proUntilAfter: number | null }
+export interface PaymentRecord { id: string; plan: string; amount: number; currency: string; status: 'paid' | 'failed'; provider: 'razorpay' | 'demo'; method: 'card' | 'upi' | null; paymentId: string | null; createdAt: number; paidAt: number | null; proUntilAfter: number | null }
 export interface BillingInfo {
   configured: boolean
+  mode: 'razorpay_test' | 'razorpay_live' | 'demo' | 'off'
   testMode: boolean
   plan: Plan
   plans: BillingPlan[]

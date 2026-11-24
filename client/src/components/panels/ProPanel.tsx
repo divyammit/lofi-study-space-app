@@ -69,9 +69,14 @@ export default function ProPanel({ onClose }: { onClose: () => void }) {
         <p className="border-2 border-line p-3 text-muted">Payments aren&rsquo;t switched on for this site yet. The site owner needs to add Razorpay keys (see DEPLOY.md, &ldquo;Payments&rdquo;).</p>
       ) : (
         <>
-          {billing.testMode && (
+          {billing.mode === 'razorpay_test' && (
             <div className="mb-3 border-2 border-dashed border-amber p-2 text-[17px]">
               <span className="text-amber">Test mode:</span> no real money moves. Pay with card <span className="font-mono">4100 2800 0000 1007</span>, any future expiry, any CVV and OTP <span className="font-mono">1234</span>, or UPI ID <span className="font-mono">success@razorpay</span>.
+            </div>
+          )}
+          {billing.mode === 'demo' && (
+            <div className="mb-3 border-2 border-dashed border-amber p-2 text-[17px]">
+              <span className="text-amber">Demo mode:</span> checkout is simulated and no real money moves. The checkout window shows test cards and UPI IDs to use.
             </div>
           )}
           <div className="grid gap-2 sm:grid-cols-2">
@@ -88,7 +93,7 @@ export default function ProPanel({ onClose }: { onClose: () => void }) {
               </div>
             ))}
           </div>
-          <p className="mt-2 text-[16px] text-muted">Payments are handled securely by Razorpay (cards, UPI, net banking). This app never sees your card or UPI details. One-time payment, no auto-renewal.</p>
+          <p className="mt-2 text-[16px] text-muted">{billing.mode === 'demo' ? 'Demo checkout: payments are simulated end to end (order, signature check, receipt). One-time payment, no auto-renewal.' : 'Payments are handled securely by Razorpay (cards, UPI, net banking). This app never sees your card or UPI details. One-time payment, no auto-renewal.'}</p>
         </>
       )}
 
@@ -102,7 +107,7 @@ export default function ProPanel({ onClose }: { onClose: () => void }) {
                 <span>{h.plan === 'pro_year' ? 'Pro · 1 year' : 'Pro · 1 month'}</span>
                 <span>{formatInr(h.amount)}</span>
                 <span className={`ml-auto ${h.status === 'paid' ? 'text-moss' : 'text-muted'}`}>{h.status === 'paid' ? 'Paid' : 'Not completed'}</span>
-                {h.paymentId && <span className="w-full truncate text-[14px] text-muted">Payment ID {h.paymentId}</span>}
+                {h.paymentId && <span className="w-full truncate text-[14px] text-muted">{h.method === 'upi' ? 'UPI' : h.method === 'card' ? 'Card' : 'Payment'} · {h.paymentId}{h.provider === 'demo' ? ' · demo' : ''}</span>}
               </li>
             ))}
           </ul>

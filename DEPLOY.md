@@ -224,7 +224,25 @@ If more than one key is set, add `AI_PROVIDER` = `gemini`, `anthropic` or `opena
 | `AI_PRO_DAILY` | 150 | Fair-use questions per day on Pro |
 | `APP_TIMEZONE` | Asia/Kolkata | Limits reset at midnight in this timezone |
 
-## Payments (Razorpay, for Pro)
+## Payments (for Pro)
+
+### Demo mode (default: nothing to set up)
+With no Razorpay keys, the app uses a built-in **demo gateway**. The Pro panel opens a realistic checkout
+(card with OTP, or UPI) that only accepts test details, and nothing real is charged:
+
+| Method | Test details | Result |
+|---|---|---|
+| Card | `4111 1111 1111 1111` (or `5555 5555 5555 4444`), any future expiry, any CVV, OTP `1234` | success |
+| Card | `4000 0000 0000 0002` | declined |
+| UPI | `success@demo` | success |
+| UPI | `failure@demo` | declined |
+
+Behind the window, the server runs the same steps as with Razorpay: it creates an order, the gateway signs the payment
+(HMAC-SHA256), `/verify` checks the signature, then Pro is activated. Rows in `payments` are marked `provider = 'demo'`.
+To switch demo mode off, set `DEMO_PAYMENTS=off`. Adding Razorpay keys switches to Razorpay automatically.
+
+## Razorpay (optional)
+Note: Razorpay's Indian signup asks for a PAN before you reach the dashboard. Only use your own details.
 
 ### 1. Get test keys (no real money)
 1. Sign up at **razorpay.com** and open the **Dashboard**.

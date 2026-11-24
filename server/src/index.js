@@ -15,7 +15,7 @@ import sessionRoutes from './routes/sessions.js'
 import friendRoutes from './routes/friends.js'
 import chatRoutes from './routes/chats.js'
 import aiRoutes from './routes/ai.js'
-import billingRoutes, { webhook as billingWebhook } from './routes/billing.js'
+import billingRoutes, { webhook as billingWebhook, paymentMode } from './routes/billing.js'
 import { logAiSetup } from './ai.js'
 import { requireAuth } from './auth.js'
 import { iceServers, logRtcSetup } from './rtc.js'
@@ -85,5 +85,5 @@ server.listen(PORT, () => {
   console.log(`Lo-Fi Study Space server on http://localhost:${PORT}`)
   logRtcSetup()
   logAiSetup()
-  console.log(process.env.RAZORPAY_KEY_ID ? `[billing] Razorpay ${process.env.RAZORPAY_KEY_ID.startsWith('rzp_test_') ? 'TEST' : 'LIVE'} mode.` : '[billing] Razorpay not configured: Pro checkout disabled. See DEPLOY.md.')
+  console.log({ razorpay_test: '[billing] Razorpay TEST mode.', razorpay_live: '[billing] Razorpay LIVE mode.', demo: '[billing] Demo payment mode (no Razorpay keys): checkout is simulated, no real money moves.', off: '[billing] Payments off.' }[paymentMode()])
 })

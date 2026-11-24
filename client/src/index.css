@@ -202,3 +202,11 @@ input[type="range"].px-range::-moz-range-thumb {
 .md .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.2em 0; margin: 0.5em 0; }
 :root[data-env="light"] .md code, :root[data-env="light"] .md pre { background: rgba(0,0,0,.07); }
 .tutor-cursor::after { content: '▌'; color: var(--amber); animation: blink 1s steps(1) infinite; margin-left: 2px; }
+
+/* ---------- demo checkout ---------- */
+.demo-checkout button, .demo-checkout input { font-family: inherit; }
+.demo-pop { animation: demo-pop 0.45s cubic-bezier(.2,1.4,.4,1) both; }
+@keyframes demo-pop { from { transform: scale(0.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.demo-tick { stroke-dasharray: 24; stroke-dashoffset: 24; animation: demo-tick 0.4s 0.25s ease-out forwards; }
+@keyframes demo-tick { to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .demo-pop, .demo-tick { animation: none; stroke-dashoffset: 0; } }

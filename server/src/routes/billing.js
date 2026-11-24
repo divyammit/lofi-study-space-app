@@ -16,12 +16,24 @@ import { LIMITS, PLANS, planOf } from '../plans.js'
  *
  * Environment: RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, optional RAZORPAY_WEBHOOK_SECRET.
  * Test-mode keys start with rzp_test_ and move no real money.
+ * Without Razorpay keys, the built-in demo gateway below is used instead (DEMO_PAYMENTS=off disables it).
  */
 
 const keyId = () => process.env.RAZORPAY_KEY_ID || ''
 const keySecret = () => process.env.RAZORPAY_KEY_SECRET || ''
 const apiBase = () => (process.env.RAZORPAY_API_BASE || 'https://api.razorpay.com').replace(/\/$/, '')
-const configured = () => !!(keyId() && keySecret())
+const razorpayReady = () => !!(keyId() && keySecret())
+
+/**
+ * Demo gateway: used when no Razorpay keys are set (turn off with DEMO_PAYMENTS=off).
+ * It behaves like a payment gateway: it issues order ids, "processes" a payment, and signs the result
+ * with its own secret, so /verify checks a real HMAC signature exactly as it does for Razorpay.
+ * No real money moves and no card details ever reach the server.
+ */
+const demoEnabled = () => !razorpayReady() && (process.env.DEMO_PAYMENTS || 'on').toLowerCase() !== 'off'
+const demoSecret = () => hmacHex(process.env.JWT_SECRET || 'dev-only-secret', 'lofi-demo-gateway')
+const configured = () => razorpayReady() || demoEnabled()
+export const paymentMode = () => (razorpayReady() ? (keyId().startsWith('rzp_test_') ? 'razorpay_test' : 'razorpay_live') : demoEnabled() ? 'demo' : 'off')
 
 const hmacHex = (secret, data) => createHmac('sha256', secret).update(data).digest('hex')
 function safeEqual(a, b) {
@@ -86,14 +98,15 @@ router.use(requireAuth)
 router.get('/', wrap(async (req, res) => {
   const plan = await planOf(req.userId)
   const history = await q(
-    `SELECT id, plan, amount, currency, status, razorpay_payment_id AS "paymentId",
+    `SELECT id, plan, amount, currency, status, provider, method, razorpay_payment_id AS "paymentId",
             ${ms('created_at')} AS "createdAt", ${ms('paid_at')} AS "paidAt", ${ms('pro_until_after')} AS "proUntilAfter"
      FROM payments WHERE user_id = $1 AND status <> 'created' ORDER BY created_at DESC LIMIT 20`,
     [req.userId],
   )
   res.json({
     configured: configured(),
-    testMode: keyId().startsWith('rzp_test_'),
+    mode: paymentMode(),
+    testMode: paymentMode() !== 'razorpay_live',
     plan,
     plans: Object.values(PLANS).map(p => ({ id: p.id, name: p.name, days: p.days, amount: p.amount, currency: 'INR' })),
     history: history.rows,
@@ -105,6 +118,18 @@ router.post('/orders', wrap(async (req, res) => {
   if (!configured()) throw new HttpError(503, 'Payments are not set up on this server yet. The site owner needs to add Razorpay keys (see DEPLOY.md).')
   const plan = PLANS[req.body.planId]
   if (!plan) throw new HttpError(400, 'Unknown plan')
+  const u = (await q(`SELECT display_name, email FROM users WHERE id = $1`, [req.userId])).rows[0]
+  const prefill = { name: u?.display_name ?? '', email: u?.email ?? '' }
+
+  if (!razorpayReady()) {
+    const orderId = `order_demo_${randomBytes(7).toString('hex')}`
+    await q(
+      `INSERT INTO payments (user_id, plan, amount, currency, razorpay_order_id, provider) VALUES ($1, $2, $3, 'INR', $4, 'demo')`,
+      [req.userId, plan.id, plan.amount, orderId],
+    )
+    return res.json({ provider: 'demo', keyId: null, orderId, amount: plan.amount, currency: 'INR', planName: plan.name, prefill })
+  }
+
   const receipt = `pro_${Date.now().toString(36)}_${randomBytes(3).toString('hex')}`
   let order
   try {
@@ -129,14 +154,54 @@ router.post('/orders', wrap(async (req, res) => {
     `INSERT INTO payments (user_id, plan, amount, currency, razorpay_order_id) VALUES ($1, $2, $3, 'INR', $4)`,
     [req.userId, plan.id, plan.amount, order.id],
   )
-  const u = (await q(`SELECT display_name, email FROM users WHERE id = $1`, [req.userId])).rows[0]
   res.json({
+    provider: 'razorpay',
     keyId: keyId(),
     orderId: order.id,
     amount: plan.amount,
     currency: 'INR',
     planName: plan.name,
-    prefill: { name: u?.display_name ?? '', email: u?.email ?? '' },
+    prefill,
+  })
+}))
+
+/**
+ * The demo gateway "processes" a payment. The browser sends only the outcome of the test method
+ * (never card numbers). Like a real gateway it returns a payment id and a signature, which the
+ * browser then passes to /verify.
+ */
+router.post('/demo/pay', wrap(async (req, res) => {
+  if (!demoEnabled()) throw new HttpError(404, 'Demo payments are switched off')
+  const orderId = String(req.body?.orderId ?? '')
+  const method = req.body?.method === 'upi' ? 'upi' : 'card'
+  const outcome = req.body?.outcome === 'failure' ? 'failure' : 'success'
+  const p = (await q(
+    `SELECT id, status, razorpay_payment_id FROM payments WHERE razorpay_order_id = $1 AND user_id = $2 AND provider = 'demo'`,
+    [orderId, req.userId],
+  )).rows[0]
+  if (!p) throw new HttpError(404, 'Order not found')
+  // like a real gateway, an order can be paid only once
+  if (p.status !== 'created' || p.razorpay_payment_id) throw new HttpError(409, 'This order has already been processed')
+  await new Promise(r => setTimeout(r, 600)) // a gateway takes a moment
+  await q(`UPDATE payments SET method = $2 WHERE id = $1`, [p.id, method])
+  if (outcome === 'failure') {
+    await q(`UPDATE payments SET status = 'failed' WHERE id = $1 AND status = 'created'`, [p.id])
+    return res.status(402).json({
+      error: method === 'upi' ? 'Payment declined by the UPI app.' : 'Your bank declined this card.',
+      code: 'payment_failed',
+    })
+  }
+  const paymentId = `pay_demo_${randomBytes(7).toString('hex')}`
+  // remember which payment the gateway issued; the conditional update also stops two tabs paying at once
+  const claimed = await q(
+    `UPDATE payments SET razorpay_payment_id = $2 WHERE id = $1 AND status = 'created' AND razorpay_payment_id IS NULL`,
+    [p.id, paymentId],
+  )
+  if (!claimed.rowCount) throw new HttpError(409, 'This order has already been processed')
+  res.json({
+    razorpay_order_id: orderId,
+    razorpay_payment_id: paymentId,
+    razorpay_signature: hmacHex(demoSecret(), `${orderId}|${paymentId}`),
   })
 }))
 
@@ -144,9 +209,12 @@ router.post('/verify', wrap(async (req, res) => {
   const { razorpay_order_id: orderId, razorpay_payment_id: paymentId, razorpay_signature: signature } = req.body || {}
   if (![orderId, paymentId, signature].every(v => typeof v === 'string' && v.length > 0 && v.length < 200)) throw new HttpError(400, 'Missing payment details')
   // the order must be one this user created on our server
-  const p = (await q(`SELECT id FROM payments WHERE razorpay_order_id = $1 AND user_id = $2`, [orderId, req.userId])).rows[0]
+  const p = (await q(`SELECT id, provider, razorpay_payment_id FROM payments WHERE razorpay_order_id = $1 AND user_id = $2`, [orderId, req.userId])).rows[0]
   if (!p) throw new HttpError(404, 'Payment not found')
-  if (!safeEqual(hmacHex(keySecret(), `${orderId}|${paymentId}`), signature)) {
+  if (p.provider === 'demo' && p.razorpay_payment_id !== paymentId) throw new HttpError(400, "We couldn't verify this payment, so Pro wasn't activated.")
+  // each gateway signs with its own secret
+  const secret = p.provider === 'demo' ? (demoEnabled() ? demoSecret() : null) : keySecret()
+  if (!secret || !safeEqual(hmacHex(secret, `${orderId}|${paymentId}`), signature)) {
     await q(`UPDATE payments SET status = 'failed' WHERE id = $1 AND status = 'created'`, [p.id])
     throw new HttpError(400, "We couldn't verify this payment, so Pro wasn't activated. If money was deducted, contact support with your payment ID.")
   }
