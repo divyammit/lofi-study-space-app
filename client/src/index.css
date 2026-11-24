@@ -210,3 +210,25 @@ input[type="range"].px-range::-moz-range-thumb {
 .demo-tick { stroke-dasharray: 24; stroke-dashoffset: 24; animation: demo-tick 0.4s 0.25s ease-out forwards; }
 @keyframes demo-tick { to { stroke-dashoffset: 0; } }
 @media (prefers-reduced-motion: reduce) { .demo-pop, .demo-tick { animation: none; stroke-dashoffset: 0; } }
+
+/* ---------- checkout page ---------- */
+.checkout-page button, .checkout-page input { font-family: inherit; }
+.checkout-page .font-title { font-family: var(--font-title); }
+.checkout-grid {
+  background-image: linear-gradient(rgba(255,255,255,.9) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.9) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: radial-gradient(circle at 80% 10%, black, transparent 70%);
+}
+.checkout-in { animation: checkout-in 0.5s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes checkout-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.qr-frame { box-shadow: 0 0 0 1px #ecebf2, 0 12px 30px -12px rgba(46,41,64,.35); }
+.qr-scan { animation: qr-scan 2.6s ease-in-out infinite; }
+@keyframes qr-scan { 0%, 100% { transform: translateY(0); opacity: 0; } 10%, 90% { opacity: 1; } 50% { transform: translateY(236px); } }
+.checkout-pop { animation: demo-pop 0.5s cubic-bezier(.2,1.4,.4,1) both; }
+.checkout-tick { stroke-dasharray: 24; stroke-dashoffset: 24; animation: demo-tick 0.45s 0.3s ease-out forwards; }
+.checkout-spark { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; background: #f2a65a;
+  transform: rotate(var(--a)) translateY(0); opacity: 0; animation: checkout-spark 0.8s 0.35s ease-out forwards; }
+.checkout-spark:nth-child(even) { background: #5b4bdb; }
+@keyframes checkout-spark { 0% { opacity: 1; transform: rotate(var(--a)) translateY(0); } 100% { opacity: 0; transform: rotate(var(--a)) translateY(-58px); } }
+@media (max-width: 640px) { @keyframes qr-scan { 0%, 100% { transform: translateY(0); opacity: 0; } 10%, 90% { opacity: 1; } 50% { transform: translateY(216px); } } }
+@media (prefers-reduced-motion: reduce) { .checkout-in, .qr-scan, .checkout-pop, .checkout-tick, .checkout-spark { animation: none; } .checkout-tick { stroke-dashoffset: 0; } .qr-scan, .checkout-spark { display: none; } }

@@ -185,3 +185,19 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS method VARCHAR(10);   -- card / up
 DO $$ BEGIN
   ALTER TABLE payments ADD CONSTRAINT payments_provider_chk CHECK (provider IN ('razorpay', 'demo'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ---------- UPI QR payments (checked by the team) ----------
+-- flow: created -> pending (payer submitted their UPI reference / UTR) -> paid (team approved) or failed (rejected)
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS reference   VARCHAR(16);                 -- short code put in the UPI note, e.g. LOFI-7K3Q9P
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS utr         VARCHAR(30);                 -- the payer's 12-digit UPI transaction reference
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS claimed_at  TIMESTAMPTZ;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS review_note VARCHAR(200);
+-- one UTR can only ever be claimed once
+CREATE UNIQUE INDEX IF NOT EXISTS payments_utr_unique ON payments (utr) WHERE utr IS NOT NULL;
+CREATE INDEX IF NOT EXISTS payments_pending ON payments (claimed_at) WHERE status = 'pending';
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check;
+ALTER TABLE payments ADD CONSTRAINT payments_status_check CHECK (status IN ('created', 'pending', 'paid', 'failed'));
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_provider_chk;
+ALTER TABLE payments ADD CONSTRAINT payments_provider_chk CHECK (provider IN ('razorpay', 'demo', 'upi'));

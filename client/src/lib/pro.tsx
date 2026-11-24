@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api } from './api'
 import { useStore } from './store'
 import type { BillingInfo, Plan } from './types'
@@ -22,6 +22,8 @@ interface ProStore {
   openTutor: (prefill?: TutorPrefill) => void
   takeTutorPrefill: () => TutorPrefill | null
   tutorSignal: number
+  /** bumps when a new UPI payment arrives for the team to review */
+  reviewSignal: number
 }
 
 const Ctx = createContext<ProStore | null>(null)
@@ -53,7 +55,7 @@ function loadCheckout() {
 }
 
 export function ProProvider({ initial, children }: { initial: Plan; children: ReactNode }) {
-  const { toast } = useStore()
+  const { toast, socket } = useStore()
   const [plan, setPlan] = useState<Plan>(initial)
   const [billing, setBilling] = useState<BillingInfo | null>(null)
   const [checkingOut, setCheckingOut] = useState(false)
@@ -76,9 +78,14 @@ export function ProProvider({ initial, children }: { initial: Plan; children: Re
   const checkout = useCallback(async (planId: string) => {
     setCheckingOut(true)
     try {
-      const order = await api<{ provider: 'razorpay' | 'demo'; keyId: string | null; orderId: string; amount: number; currency: string; planName: string; prefill: { name: string; email: string } }>(
+      const order = await api<{ provider: 'razorpay' | 'demo' | 'upi'; keyId: string | null; orderId: string; amount: number; currency: string; planName: string; prefill: { name: string; email: string } }>(
         '/api/billing/orders', { body: { planId } },
       )
+      if (order.provider === 'upi') {
+        // UPI QR payments have their own checkout page
+        window.location.assign(`/checkout/${encodeURIComponent(order.orderId)}`)
+        return await new Promise<boolean>(() => {})
+      }
       if (order.provider === 'demo') {
         // built-in demo gateway: same order -> pay -> verify flow, simulated checkout window
         return await new Promise<boolean>(resolve => setDemo({ order: { ...order, planId }, resolve }))
@@ -137,6 +144,26 @@ export function ProProvider({ initial, children }: { initial: Plan; children: Re
     }
   }, [toast, loadBilling])
 
+  // live updates: the team approved/rejected my payment, or (for the team) a new payment needs checking
+  const reviewSignalRef = useRef<() => void>(() => {})
+  const [reviewSignal, setReviewSignal] = useState(0)
+  reviewSignalRef.current = () => setReviewSignal(n => n + 1)
+  useEffect(() => {
+    if (!socket) return
+    const onUpdated = ({ status }: { status: string }) => {
+      void loadBilling()
+      if (status === 'paid') toast('Your payment was confirmed. Welcome to Lo-Fi Pro!')
+      else if (status === 'failed') toast("We couldn't verify your payment. Open Pro for details.", { label: 'Open', run: () => { setProReason(null); setProSignal(n => n + 1) } })
+    }
+    const onReview = ({ name, amount }: { name: string; amount: number }) => {
+      reviewSignalRef.current()
+      toast(`${name} paid ${formatInr(amount)} by UPI. Check and approve it.`, { label: 'Review', run: () => { setProReason(null); setProSignal(n => n + 1) } })
+    }
+    socket.on('billing:updated', onUpdated)
+    socket.on('billing:review', onReview)
+    return () => { socket.off('billing:updated', onUpdated); socket.off('billing:review', onReview) }
+  }, [socket, loadBilling, toast])
+
   /** Demo checkout hands its gateway response here, exactly like Razorpay's handler does. */
   const verifyDemo = useCallback(async (resp: { razorpay_order_id: string; razorpay_payment_id: string; razorpay_signature: string }) => {
     const r = await api<{ ok: boolean; plan: Plan }>('/api/billing/verify', { body: resp })
@@ -160,7 +187,7 @@ export function ProProvider({ initial, children }: { initial: Plan; children: Re
   }, [])
 
   return (
-    <Ctx.Provider value={{ plan, setPlan, billing, loadBilling, checkout, checkingOut, openPro, proReason, proSignal, openTutor, takeTutorPrefill, tutorSignal }}>
+    <Ctx.Provider value={{ plan, setPlan, billing, loadBilling, checkout, checkingOut, openPro, proReason, proSignal, openTutor, takeTutorPrefill, tutorSignal, reviewSignal }}>
       {children}
       {demo && (
         <DemoCheckout

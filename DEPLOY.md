@@ -226,6 +226,24 @@ If more than one key is set, add `AI_PROVIDER` = `gemini`, `anthropic` or `opena
 
 ## Payments (for Pro)
 
+### UPI QR payments (real money, checked by your team)
+Add these on Render → Environment:
+
+| Key | Value |
+|---|---|
+| `UPI_ID` | the UPI ID that receives payments, e.g. `name@oksbi` |
+| `UPI_PAYEE_NAME` | the name shown to payers, e.g. `Labhay` |
+| `ADMIN_USERNAMES` | app usernames (comma-separated) allowed to approve payments, e.g. `divyam,labhay` |
+
+How it works: **Pay** opens a checkout page at `/checkout/<order>` with a QR that has the amount and an order reference
+(`LOFI-XXXXXX`) pre-filled, plus a "Pay with UPI app" button on phones. After paying, the student enters the 12-digit
+UPI reference (UTR). Team members get a notification, and the Pro panel shows a **Payments to verify** list: check in the
+UPI app that a payment with that amount and UTR arrived, then **Approve** (Pro switches on and the student's page updates)
+or **Reject** (with a reason). Each UTR can only be used once.
+Real money is involved: keep track of refunds yourselves, and never approve a payment you haven't seen arrive.
+
+When `UPI_ID` is set it takes priority over demo mode. Razorpay keys, if added, take priority over both.
+
 ### Demo mode (default: nothing to set up)
 With no Razorpay keys, the app uses a built-in **demo gateway**. The Pro panel opens a realistic checkout
 (card with OTP, or UPI) that only accepts test details, and nothing real is charged:

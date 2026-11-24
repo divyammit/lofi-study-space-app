@@ -85,5 +85,5 @@ server.listen(PORT, () => {
   console.log(`Lo-Fi Study Space server on http://localhost:${PORT}`)
   logRtcSetup()
   logAiSetup()
-  console.log({ razorpay_test: '[billing] Razorpay TEST mode.', razorpay_live: '[billing] Razorpay LIVE mode.', demo: '[billing] Demo payment mode (no Razorpay keys): checkout is simulated, no real money moves.', off: '[billing] Payments off.' }[paymentMode()])
+  console.log({ razorpay_test: '[billing] Razorpay TEST mode.', razorpay_live: '[billing] Razorpay LIVE mode.', upi: `[billing] UPI QR payments to ${process.env.UPI_ID} (approved by: ${process.env.ADMIN_USERNAMES || 'nobody, set ADMIN_USERNAMES'}).`, demo: '[billing] Demo payment mode (no Razorpay keys): checkout is simulated, no real money moves.', off: '[billing] Payments off.' }[paymentMode()])
 })

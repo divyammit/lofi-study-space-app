@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
 import { api, ApiError } from './lib/api'
 import type { AppState } from './lib/types'
 import AuthScreen from './components/AuthScreen'
+import CheckoutPage from './components/CheckoutPage'
 import { AppProvider, useStore } from './lib/store'
 import { useStored } from './lib/storage'
 import type { PanelId } from './lib/types'
@@ -176,6 +177,10 @@ export default function App() {
   }, [loggedOut])
 
   if (phase === 'auth') return <AuthScreen onAuthed={s => { setState(s); setPhase('app') }} />
+  // the checkout page lives at its own address: /checkout/<orderId>
+  const checkoutId = window.location.pathname.match(/^\/checkout\/([A-Za-z0-9_-]+)\/?$/)?.[1]
+  if (phase === 'app' && state && checkoutId) return <CheckoutPage orderId={checkoutId} account={state.user} />
+
   if (phase === 'app' && state) {
     return (
       <AppProvider key={state.user.id} initial={state} onLoggedOut={loggedOut}>

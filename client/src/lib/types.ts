@@ -215,13 +215,33 @@ export interface TutorStatus {
 }
 
 export interface BillingPlan { id: 'pro_month' | 'pro_year'; name: string; days: number; amount: number; currency: string }
-export interface PaymentRecord { id: string; plan: string; amount: number; currency: string; status: 'paid' | 'failed'; provider: 'razorpay' | 'demo'; method: 'card' | 'upi' | null; paymentId: string | null; createdAt: number; paidAt: number | null; proUntilAfter: number | null }
+export interface PaymentRecord { id: string; plan: string; amount: number; currency: string; status: 'paid' | 'failed' | 'pending'; provider: 'razorpay' | 'demo' | 'upi'; orderId: string; reference: string | null; utr: string | null; reviewNote: string | null; method: 'card' | 'upi' | null; paymentId: string | null; createdAt: number; paidAt: number | null; proUntilAfter: number | null }
 export interface BillingInfo {
   configured: boolean
-  mode: 'razorpay_test' | 'razorpay_live' | 'demo' | 'off'
+  mode: 'razorpay_test' | 'razorpay_live' | 'upi' | 'demo' | 'off'
+  isAdmin: boolean
   testMode: boolean
   plan: Plan
   plans: BillingPlan[]
   history: PaymentRecord[]
   limits: { freeDaily: number; proDaily: number }
+}
+
+export interface ReviewItem {
+  id: string
+  orderId: string
+  plan: string
+  planName: string
+  amount: number
+  status: 'pending' | 'paid' | 'failed'
+  reference: string | null
+  utr: string | null
+  reviewNote: string | null
+  createdAt: number
+  claimedAt: number | null
+  username: string
+  name: string
+  email?: string
+  reviewedBy?: string | null
+  reviewedAt?: number | null
 }
