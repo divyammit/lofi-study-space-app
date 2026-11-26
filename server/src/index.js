@@ -15,10 +15,12 @@ import sessionRoutes from './routes/sessions.js'
 import friendRoutes from './routes/friends.js'
 import chatRoutes from './routes/chats.js'
 import aiRoutes from './routes/ai.js'
+import doubtRoutes from './routes/doubts.js'
 import billingRoutes, { webhook as billingWebhook, paymentMode } from './routes/billing.js'
 import { logAiSetup } from './ai.js'
 import { requireAuth } from './auth.js'
 import { iceServers, logRtcSetup } from './rtc.js'
+import { logMailSetup } from './mail.js'
 
 const PORT = Number(process.env.PORT) || 3001
 const app = express()
@@ -37,7 +39,7 @@ const json = express.json({ limit: '200kb' })
 // Razorpay's webhook must see the raw body to check its signature, so it's mounted before any JSON parsing
 app.post('/api/billing/webhook', ...billingWebhook)
 
-const bigBody = p => p === '/api/me/whiteboard' || p === '/api/ai/ask' || /^\/api\/chats\/[^/]+\/messages$/.test(p)
+const bigBody = p => p === '/api/me/whiteboard' || p === '/api/ai/ask' || /^\/api\/chats\/[^/]+\/messages$/.test(p) || p === '/api/doubts' || /^\/api\/doubts\/[^/]+\/answers$/.test(p)
 app.use((req, res, next) => (bigBody(req.path) && req.method !== 'GET' ? next() : json(req, res, next)))
 app.use(cookieParser())
 
@@ -53,6 +55,7 @@ app.use('/api/friends', friendRoutes)
 app.use('/api/chats', chatRoutes)
 app.use('/api/ai', aiRoutes)
 app.use('/api/billing', billingRoutes)
+app.use('/api/doubts', doubtRoutes)
 
 // STUN/TURN servers for voice & video calls (see rtc.js)
 app.get('/api/rtc-config', requireAuth, wrap(async (_req, res) => {
@@ -64,7 +67,8 @@ app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not found')))
 const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client/dist')
 if (existsSync(dist)) {
   app.use(express.static(dist, { index: false, maxAge: '1h' }))
-  app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+  // never cache the page itself, so a new deploy shows up on the next refresh
+  app.get('*', (_req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(path.join(dist, 'index.html')) })
 } else {
   app.get('/', (_req, res) => res.send('API is running. Start the React app with "npm run dev" in client/.'))
 }
@@ -85,5 +89,6 @@ server.listen(PORT, () => {
   console.log(`Lo-Fi Study Space server on http://localhost:${PORT}`)
   logRtcSetup()
   logAiSetup()
+  logMailSetup()
   console.log({ razorpay_test: '[billing] Razorpay TEST mode.', razorpay_live: '[billing] Razorpay LIVE mode.', upi: `[billing] UPI QR payments to ${process.env.UPI_ID} (approved by: ${process.env.ADMIN_USERNAMES || 'nobody, set ADMIN_USERNAMES'}).`, demo: '[billing] Demo payment mode (no Razorpay keys): checkout is simulated, no real money moves.', off: '[billing] Payments off.' }[paymentMode()])
 })

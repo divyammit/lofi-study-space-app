@@ -201,3 +201,117 @@ ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_status_check;
 ALTER TABLE payments ADD CONSTRAINT payments_status_check CHECK (status IN ('created', 'pending', 'paid', 'failed'));
 ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_provider_chk;
 ALTER TABLE payments ADD CONSTRAINT payments_provider_chk CHECK (provider IN ('razorpay', 'demo', 'upi'));
+
+-- ---------- password reset ----------
+-- when the password last changed; login cookies issued before this stop working (logs out other devices)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pw_changed_at TIMESTAMPTZ;
+
+-- one row per "forgot password" email. Only a SHA-256 hash of the token is stored, so a database
+-- leak can't be turned into working reset links.
+CREATE TABLE IF NOT EXISTS password_resets (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash CHAR(64) NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at    TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS password_resets_user ON password_resets (user_id, created_at DESC);
+
+-- ---------- doubt board (public questions & answers) ----------
+CREATE TABLE IF NOT EXISTS doubts (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id            UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  subject            VARCHAR(60)  NOT NULL DEFAULT 'General',
+  title              VARCHAR(150) NOT NULL CHECK (char_length(btrim(title)) >= 5),
+  body               TEXT         NOT NULL DEFAULT '' CHECK (char_length(body) <= 8000),
+  image              TEXT,                                -- optional photo (JPEG data URL)
+  score              INTEGER      NOT NULL DEFAULT 0,     -- upvotes minus downvotes (kept by a trigger)
+  answer_count       INTEGER      NOT NULL DEFAULT 0,     -- kept by a trigger
+  accepted_answer_id UUID,                                -- the answer the asker marked as solving it
+  created_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
+  active_at          TIMESTAMPTZ  NOT NULL DEFAULT now(), -- last new answer (for "recently active")
+  -- full-text search: title matters most, then subject, then the body
+  search tsvector GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(subject, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(body, '')), 'C')
+  ) STORED
+);
+CREATE INDEX IF NOT EXISTS doubts_search  ON doubts USING GIN (search);
+CREATE INDEX IF NOT EXISTS doubts_recent  ON doubts (created_at DESC);
+CREATE INDEX IF NOT EXISTS doubts_subject ON doubts (lower(subject), created_at DESC);
+CREATE INDEX IF NOT EXISTS doubts_user    ON doubts (user_id);
+
+CREATE TABLE IF NOT EXISTS doubt_answers (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  doubt_id   UUID NOT NULL REFERENCES doubts(id) ON DELETE CASCADE,
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- for AI answers: who asked the AI
+  is_ai      BOOLEAN NOT NULL DEFAULT false,
+  body       TEXT NOT NULL CHECK (char_length(body) BETWEEN 1 AND 12000),
+  image      TEXT,
+  score      INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS doubt_answers_doubt ON doubt_answers (doubt_id, created_at);
+-- at most one AI answer per doubt
+CREATE UNIQUE INDEX IF NOT EXISTS doubt_answers_one_ai ON doubt_answers (doubt_id) WHERE is_ai;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'doubts_accepted_fk') THEN
+    ALTER TABLE doubts ADD CONSTRAINT doubts_accepted_fk
+      FOREIGN KEY (accepted_answer_id) REFERENCES doubt_answers(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+-- one vote per person per doubt / answer: +1 or -1
+CREATE TABLE IF NOT EXISTS doubt_votes (
+  doubt_id UUID NOT NULL REFERENCES doubts(id) ON DELETE CASCADE,
+  user_id  UUID NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+  value    SMALLINT NOT NULL CHECK (value IN (-1, 1)),
+  PRIMARY KEY (doubt_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS answer_votes (
+  answer_id UUID NOT NULL REFERENCES doubt_answers(id) ON DELETE CASCADE,
+  user_id   UUID NOT NULL REFERENCES users(id)          ON DELETE CASCADE,
+  value     SMALLINT NOT NULL CHECK (value IN (-1, 1)),
+  PRIMARY KEY (answer_id, user_id)
+);
+
+-- triggers keep the score and answer counters correct whatever writes to these tables
+CREATE OR REPLACE FUNCTION doubt_answer_count() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE doubts SET answer_count = answer_count + 1, active_at = now() WHERE id = NEW.doubt_id;
+  ELSE
+    UPDATE doubts SET answer_count = greatest(answer_count - 1, 0) WHERE id = OLD.doubt_id;
+  END IF;
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS doubt_answers_count ON doubt_answers;
+CREATE TRIGGER doubt_answers_count AFTER INSERT OR DELETE ON doubt_answers
+  FOR EACH ROW EXECUTE FUNCTION doubt_answer_count();
+
+CREATE OR REPLACE FUNCTION doubt_vote_score() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE doubts SET score = score
+    + (CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN NEW.value ELSE 0 END)
+    - (CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN OLD.value ELSE 0 END)
+  WHERE id = coalesce(NEW.doubt_id, OLD.doubt_id);
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS doubt_votes_score ON doubt_votes;
+CREATE TRIGGER doubt_votes_score AFTER INSERT OR UPDATE OR DELETE ON doubt_votes
+  FOR EACH ROW EXECUTE FUNCTION doubt_vote_score();
+
+CREATE OR REPLACE FUNCTION answer_vote_score() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE doubt_answers SET score = score
+    + (CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN NEW.value ELSE 0 END)
+    - (CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN OLD.value ELSE 0 END)
+  WHERE id = coalesce(NEW.answer_id, OLD.answer_id);
+  RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS answer_votes_score ON answer_votes;
+CREATE TRIGGER answer_votes_score AFTER INSERT OR UPDATE OR DELETE ON answer_votes
+  FOR EACH ROW EXECUTE FUNCTION answer_vote_score();

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useStore } from '../../lib/store'
+import { api } from '../../lib/api'
 import type { AnimationLevel, ThemeId } from '../../lib/types'
 import { Panel, Check, Seg, SectionTitle } from '../ui'
 import { usePro } from '../../lib/pro'
@@ -12,9 +13,47 @@ const THEMES: { value: ThemeId; label: string; pro?: boolean }[] = [
   { value: 'sunset', label: 'Sunset bedroom', pro: true },
 ]
 
+function ChangePassword({ onDone }: { onDone: () => void }) {
+  const { toast } = useStore()
+  const [f, setF] = useState({ current: '', next: '', again: '' })
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF(x => ({ ...x, [k]: e.target.value }))
+  return (
+    <form
+      className="mt-3 flex flex-col gap-2 border-2 border-line p-3"
+      onSubmit={async e => {
+        e.preventDefault()
+        setError('')
+        if (f.next !== f.again) { setError("The new passwords don't match."); return }
+        setBusy(true)
+        try {
+          await api('/api/auth/password', { body: { current: f.current, password: f.next } })
+          toast('Password changed. Other devices were logged out.')
+          onDone()
+        } catch (err) { setError(err instanceof Error ? err.message : 'Could not change password'); setBusy(false) }
+      }}
+    >
+      <label className="flex flex-col gap-1"><span className="text-muted">Current password</span>
+        <input type="password" className="px-input" value={f.current} onChange={set('current')} autoComplete="current-password" required /></label>
+      <label className="flex flex-col gap-1"><span className="text-muted">New password (8+ characters)</span>
+        <input type="password" className="px-input" value={f.next} onChange={set('next')} autoComplete="new-password" minLength={8} maxLength={200} required /></label>
+      <label className="flex flex-col gap-1"><span className="text-muted">New password again</span>
+        <input type="password" className="px-input" value={f.again} onChange={set('again')} autoComplete="new-password" minLength={8} maxLength={200} required /></label>
+      {error && <p className="border-2 border-rose px-3 py-1 text-rose" role="alert">{error}</p>}
+      <p className="text-[16px] text-muted">This logs you out on your other devices. Forgot the current one? Log out and use &ldquo;Forgot password?&rdquo;.</p>
+      <div className="flex gap-2">
+        <button className="px-solid px-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Change password'}</button>
+        <button className="px-btn" type="button" onClick={onDone}>Cancel</button>
+      </div>
+    </form>
+  )
+}
+
 export default function SettingsPanel({ onClose }: { onClose: () => void }) {
   const { settings, setSettings, toast, account, logout, deleteAccount } = useStore()
   const [deleting, setDeleting] = useState(false)
+  const [changing, setChanging] = useState(false)
   const [password, setPassword] = useState('')
   const { plan, openPro } = usePro()
   const set = <K extends keyof typeof settings>(k: K, v: (typeof settings)[K]) => setSettings(s => ({ ...s, [k]: v }))
@@ -87,8 +126,10 @@ export default function SettingsPanel({ onClose }: { onClose: () => void }) {
       <p className="text-muted">Signed in as @{account.username} ({account.email}). Your settings, tasks, notes and study history are saved to your account.</p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className="px-solid" onClick={logout}>Log out</button>
+        {!changing && <button className="px-btn" onClick={() => setChanging(true)}>Change password…</button>}
         {!deleting && <button className="px-btn text-muted hover:!text-rose" onClick={() => setDeleting(true)}>Delete account…</button>}
       </div>
+      {changing && <ChangePassword onDone={() => setChanging(false)} />}
       {deleting && (
         <form
           className="mt-3 border-2 border-rose p-3"

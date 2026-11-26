@@ -59,7 +59,7 @@ export type SoundMix = Record<SoundId, { on: boolean; vol: number }>
 
 export type PanelId =
   | 'timer' | 'tasks' | 'notes' | 'board' | 'sounds'
-  | 'stats' | 'street' | 'chats' | 'friends' | 'profile' | 'settings' | 'tutor' | 'pro'
+  | 'stats' | 'street' | 'chats' | 'friends' | 'profile' | 'settings' | 'tutor' | 'pro' | 'doubts'
 
 export interface Account {
   id: string
@@ -245,3 +245,22 @@ export interface ReviewItem {
   reviewedBy?: string | null
   reviewedAt?: number | null
 }
+
+// ---------- doubt board ----------
+export interface DoubtAuthor { id: string; name: string; username: string; avatar: number }
+export type Vote = -1 | 0 | 1
+export interface DoubtSummary {
+  id: string; title: string; subject: string; excerpt: string
+  score: number; answers: number; solved: boolean; hasImage: boolean; hasAi: boolean
+  createdAt: number; activeAt: number; author: DoubtAuthor; myVote: Vote; mine: boolean
+}
+export interface DoubtFull {
+  id: string; title: string; subject: string; body: string; image: string | null
+  score: number; answers: number; acceptedAnswerId: string | null
+  createdAt: number; author: DoubtAuthor; myVote: Vote; mine: boolean; canDelete: boolean
+}
+export interface DoubtAnswer {
+  id: string; body: string; image: string | null; isAi: boolean; score: number
+  createdAt: number; author: DoubtAuthor; myVote: Vote; mine: boolean; canDelete: boolean
+}
+export interface DoubtDetail { doubt: DoubtFull; answers: DoubtAnswer[]; ai: { configured: boolean; answered: boolean } }

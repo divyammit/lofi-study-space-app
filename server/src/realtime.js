@@ -224,11 +224,13 @@ export const realtime = {
     // 5 MB messages so a whiteboard background can be shared into a call
     io = new Server(httpServer, { cors: { origin: origins.length ? origins : false }, maxHttpBufferSize: 5e6 })
 
-    io.use((socket, next) => {
-      const userId = userIdFromSocketToken(socket.handshake.auth?.token) || userIdFromCookieHeader(socket.handshake.headers.cookie)
-      if (!userId) return next(new Error('unauthorized'))
-      socket.data.userId = userId
-      next()
+    io.use(async (socket, next) => {
+      try {
+        const userId = userIdFromSocketToken(socket.handshake.auth?.token) || (await userIdFromCookieHeader(socket.handshake.headers.cookie))
+        if (!userId) return next(new Error('unauthorized'))
+        socket.data.userId = userId
+        next()
+      } catch { next(new Error('unauthorized')) }
     })
 
     io.on('connection', async socket => {
@@ -457,6 +459,11 @@ export const realtime = {
 
   emitToChat(chatId, event, payload) {
     io?.to(chatChannel(chatId)).emit(event, payload)
+  },
+
+  /** to every connected user (used for live Doubt board updates) */
+  broadcast(event, payload) {
+    io?.emit(event, payload)
   },
 
   emitToUser(userId, event, payload) {

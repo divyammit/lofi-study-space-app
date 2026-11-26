@@ -90,7 +90,11 @@ users ─┬─< tasks
        ├─< messages (user_id)
        ├─< payments
        ├─< ai_usage
-       └─< ai_conversations ─< ai_messages
+       ├─< ai_conversations ─< ai_messages
+       ├─< password_resets
+       ├─< doubts ─┬─< doubt_answers ─< answer_votes
+       │           └─< doubt_votes
+       └─ (doubts.accepted_answer_id → doubt_answers, ON DELETE SET NULL)
 ```
 
 - **users**: account, profile (display name, avatar, favourite subject), settings as JSONB, saved whiteboard.
@@ -112,6 +116,21 @@ users ─┬─< tasks
 - **ai_usage** `(user_id, day)`: the daily question counter. The limit is enforced in one atomic statement:
   `INSERT … ON CONFLICT DO UPDATE SET questions = questions + 1 WHERE questions < limit RETURNING …`.
   No row back means the limit is reached. A question that gets no answer is refunded.
+- **password_resets**: one row per "forgot password" email. Only a SHA-256 hash of the token is stored, with
+  `expires_at` (30 minutes) and `used_at`. Resetting runs in a transaction that locks the row (`FOR UPDATE`),
+  so a link works exactly once, and it also cancels every other open link for that account.
+  `users.pw_changed_at` records the change; login cookies issued before it stop working (other devices are logged out).
+- **doubts / doubt_answers / doubt_votes / answer_votes** (Doubt board):
+  - `score` and `answer_count` are **kept by triggers** (`AFTER INSERT OR UPDATE OR DELETE … FOR EACH ROW`),
+    so they stay correct no matter which code writes a vote or answer.
+  - Votes have a composite primary key `(doubt_id, user_id)`, so one person = one vote; `CHECK (value IN (-1, 1))`.
+    Changing a vote is an upsert (`ON CONFLICT DO UPDATE`), and the trigger applies the difference.
+  - `accepted_answer_id` is a foreign key back to `doubt_answers` with `ON DELETE SET NULL`: deleting the
+    accepted answer simply makes the doubt "unsolved" again.
+  - A partial unique index (`… (doubt_id) WHERE is_ai`) allows at most one AI answer per doubt, even if two
+    people press the button at the same moment.
+  - **Full-text search**: a generated `tsvector` column (title weighted A, subject B, body C) with a GIN index.
+    Queries use `websearch_to_tsquery`, so "eigenvalue" finds "eigenvalues", and results are ranked with `ts_rank`.
 - Analytics (streaks, weekly chart, best day, top subject) are computed from `study_sessions`.
 
 ## REST API
@@ -123,6 +142,10 @@ All routes except signup/login need the login cookie. Bodies are JSON.
 | POST | `/api/auth/signup` | `{username, email, password, displayName?}` → creates account, logs in |
 | POST | `/api/auth/login` | `{login, password}` (login = username or email) |
 | POST | `/api/auth/logout` | clears the cookie |
+| POST | `/api/auth/forgot` | `{login}` emails a one-time reset link (same answer whether or not the account exists) |
+| POST | `/api/auth/reset/check` | `{token}` is this reset link still valid? |
+| POST | `/api/auth/reset` | `{token, password}` sets the new password, logs in, logs out other devices |
+| POST | `/api/auth/password` | `{current, password}` change password from Settings |
 | GET | `/api/auth/me` | full app state for the logged-in user |
 | PUT | `/api/me/profile` | `{name, avatar, favSubject}` |
 | PUT | `/api/me/settings` | `{settings}` |
@@ -156,6 +179,15 @@ All routes except signup/login need the login cookie. Bodies are JSON.
 | POST | `/api/billing/demo/pay` | demo gateway only: "processes" a test payment and returns a signed payment id |
 | POST | `/api/billing/verify` | checks the payment signature, then activates Pro |
 | POST | `/api/billing/webhook` | Razorpay → server backup (signature over the raw body) |
+| GET | `/api/doubts?q=&subject=&filter=&sort=&page=` | list / search doubts (`filter` = all, open, unanswered, solved, mine; `sort` = new, active, top, relevance) |
+| GET | `/api/doubts/subjects` | subjects with counts |
+| POST | `/api/doubts` | `{title, subject, body, image?}` ask a doubt |
+| GET / DELETE | `/api/doubts/:id` | a doubt with its answers / delete (asker or team) |
+| POST | `/api/doubts/:id/answers` | `{body, image?}` answer |
+| DELETE | `/api/doubts/answers/:answerId` | delete an answer (its author or team) |
+| POST | `/api/doubts/:id/vote` · `/api/doubts/answers/:answerId/vote` | `{value: 1 \| -1 \| 0}` |
+| POST | `/api/doubts/:id/accept` | `{answerId \| null}` the asker marks the solution |
+| POST | `/api/doubts/:id/ai` | the AI tutor adds an answer (uses one of today's AI questions) |
 | GET | `/api/rtc-config` | STUN/TURN servers for calls (see `server/src/rtc.js`) |
 | GET | `/api/health` | checks the database connection |
 
@@ -177,12 +209,18 @@ All routes except signup/login need the login cookie. Bodies are JSON.
 | both | `rtc:signal` | WebRTC offers, answers and network candidates, relayed to one peer |
 | server → client | `call:state`, `call:ring`, `call:peer-left` | who is in a call, incoming call |
 | both | `board:open`, `board:strokes`, `board:clear`, `board:close`, `board:state` | shared whiteboard in a call |
+| server → client | `doubt:new`, `doubt:updated`, `doubt:deleted` | live Doubt board updates (to everyone) |
+| server → client | `doubt:answered` | `{id, title, by}` someone answered your doubt |
 
 ### How calls work
 Audio and video go directly between browsers (WebRTC); the server only relays the setup messages.
 Everyone connects to everyone (a "mesh"), which is simple and needs no media server but limits calls
 to about 8 people. Each connection has one audio and one video slot, so turning the camera on or
-sharing your screen just swaps the track in the video slot, with no renegotiation. The shared
+sharing your screen just swaps the track in the video slot, with no renegotiation. Each person's
+voice plays through its own hidden `<audio>` element that lives outside the video tiles, so sound
+never depends on cameras being on or the call window being open. Sound levels shown on the tiles
+come from the connection statistics (`getStats()`), which tells "nothing is arriving" apart from
+"arriving but not playing". The shared
 whiteboard sends tiny line segments over Socket.IO; the server keeps them so late joiners see the board.
 
 ## Free vs Pro
@@ -201,6 +239,11 @@ Limits live in `server/src/plans.js` and are enforced on the server, not just hi
 - The session token is an httpOnly, SameSite=Lax cookie (Secure in production), so page scripts can't read it.
 - Every query is parameterised, and every row access is scoped by `user_id`.
 - Login and signup are rate-limited (30 attempts per 15 minutes per IP).
+- Password reset: tokens are 256-bit random, stored only as SHA-256 hashes, expire in 30 minutes, work once,
+  and are sent in the link's `#fragment` (never reaches server logs). The link's address comes from server
+  config, never from the request's Host header. "Forgot password" gives the same answer for any input and is
+  rate-limited (5 per 15 minutes per IP, 3 emails per account per hour). A reset or password change logs out other devices.
+- Doubt board posts are rate-limited per account; only the asker can mark a solution; nobody can vote on their own post.
 - Inputs are length- and type-checked on the server; request bodies are size-limited.
 - AI and Razorpay secret keys exist only in the server's environment; the browser only ever gets the public Razorpay Key ID.
 - Pro is granted only after the server verifies Razorpay's HMAC signature with a timing-safe comparison, using an order id from our own database. A browser can't fake a payment.
@@ -209,7 +252,7 @@ Limits live in `server/src/plans.js` and are enforced on the server, not just hi
 ## Known limits (good "future scope" material)
 
 - Live room state is held in one server's memory; running several server instances would need the Socket.IO Redis adapter.
-- No email verification or password reset yet (needs an email provider).
+- No email verification at signup yet (the reset emails show the email setup is ready for it).
 - Calls are limited to 8 people (mesh). Bigger calls would need a media server (an SFU such as LiveKit or mediasoup).
 - Without a TURN relay, calls on strict networks (mobile data, many campus Wi-Fis) connect but carry no audio/video. The app detects this after ~20 s and says so. See DEPLOY.md, "Making calls reliable".
 - Chat and tutor images are stored in the database as data URLs; at larger scale they'd move to object storage (S3, R2).

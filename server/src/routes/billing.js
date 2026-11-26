@@ -39,7 +39,7 @@ const upiId = () => (process.env.UPI_ID || '').trim()
 const upiReady = () => !razorpayReady() && /^[a-zA-Z0-9._-]{2,}@[a-zA-Z]{2,}$/.test(upiId())
 const upiPayee = () => (process.env.UPI_PAYEE_NAME || 'Lo-Fi Study Space').trim().slice(0, 50)
 const adminNames = () => (process.env.ADMIN_USERNAMES || '').split(',').map(s => s.trim().replace(/^@/, '').toLowerCase()).filter(Boolean)
-async function isAdmin(userId) {
+export async function isAdmin(userId) {
   const names = adminNames()
   if (!names.length) return false
   const r = await q(`SELECT 1 FROM users WHERE id = $1 AND lower(username) = ANY($2::text[])`, [userId, names])

@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { HttpError } from './util.js'
+import { q } from './db.js'
 
 const PROD = process.env.NODE_ENV === 'production'
 let SECRET = process.env.JWT_SECRET
@@ -25,8 +26,28 @@ export function clearAuthCookie(res) {
 function verify(token) {
   try {
     const p = jwt.verify(token, SECRET)
-    return p.aud ? null : p.sub
+    return p.aud ? null : p
   } catch { return null }
+}
+
+// When someone changes or resets their password, every login cookie issued before that moment
+// stops working, which logs out their other devices. The change time is cached for a minute.
+const pwChanged = new Map() // userId -> { at: ms (0 = never changed), fetched: ms }
+async function passwordChangedAt(userId) {
+  const c = pwChanged.get(userId)
+  if (c && Date.now() - c.fetched < 60_000) return c.at
+  const r = await q(`SELECT pw_changed_at FROM users WHERE id = $1`, [userId])
+  const at = r.rows[0]?.pw_changed_at ? new Date(r.rows[0].pw_changed_at).getTime() : 0
+  pwChanged.set(userId, { at, fetched: Date.now() })
+  return at
+}
+/** Call right after changing a password so this server stops accepting old cookies immediately. */
+export function notePasswordChange(userId, at = Date.now()) {
+  pwChanged.set(userId, { at, fetched: Date.now() })
+}
+async function stillValid(p) {
+  const at = await passwordChangedAt(p.sub)
+  return !at || (p.iat ?? 0) >= Math.floor(at / 1000)
 }
 
 /**
@@ -44,14 +65,18 @@ export function userIdFromSocketToken(token) {
 
 /** Express middleware: rejects the request unless it carries a valid login cookie. */
 export function requireAuth(req, _res, next) {
-  const id = req.cookies?.[COOKIE] && verify(req.cookies[COOKIE])
-  if (!id) return next(new HttpError(401, 'Please log in'))
-  req.userId = id
-  next()
+  const p = req.cookies?.[COOKIE] && verify(req.cookies[COOKIE])
+  if (!p) return next(new HttpError(401, 'Please log in'))
+  stillValid(p).then(ok => {
+    if (!ok) return next(new HttpError(401, 'Your password was changed. Please log in again.'))
+    req.userId = p.sub
+    next()
+  }, next)
 }
 
 /** For Socket.IO handshakes, which only give us the raw Cookie header. */
-export function userIdFromCookieHeader(header = '') {
+export async function userIdFromCookieHeader(header = '') {
   const part = header.split(';').map(s => s.trim()).find(s => s.startsWith(COOKIE + '='))
-  return part ? verify(decodeURIComponent(part.slice(COOKIE.length + 1))) : null
+  const p = part ? verify(decodeURIComponent(part.slice(COOKIE.length + 1))) : null
+  return p && (await stillValid(p)) ? p.sub : null
 }

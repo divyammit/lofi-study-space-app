@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from 'react'
 import { api, ApiError } from './lib/api'
 import type { AppState } from './lib/types'
 import AuthScreen from './components/AuthScreen'
+import ResetPassword from './components/ResetPassword'
 import CheckoutPage from './components/CheckoutPage'
 import { AppProvider, useStore } from './lib/store'
 import { useStored } from './lib/storage'
@@ -24,6 +25,7 @@ import ChatsPanel from './components/panels/ChatsPanel'
 import ProPanel from './components/panels/ProPanel'
 // the tutor pulls in the Markdown + maths renderer, so it's only downloaded when first opened
 const TutorPanel = lazy(() => import('./components/panels/TutorPanel'))
+const DoubtsPanel = lazy(() => import('./components/panels/DoubtsPanel'))
 import { ProProvider, usePro } from './lib/pro'
 import CallView from './components/CallView'
 import { ChatProvider, useChat } from './lib/chat'
@@ -32,8 +34,23 @@ import ProfilePanel from './components/panels/ProfilePanel'
 import SettingsPanel from './components/panels/SettingsPanel'
 
 function Room() {
-  const { settings, timer, timeLeft, focusMode, setFocusMode, startTimer, toasts, connected } = useStore()
+  const { settings, timer, timeLeft, focusMode, setFocusMode, startTimer, toasts, connected, socket, toast } = useStore()
   const [panel, setPanel] = useState<PanelId | null>(null)
+  // someone answered one of my doubts: notify, badge the dock, and open it on request
+  const [doubtBadge, setDoubtBadge] = useState(0)
+  const panelRef = useRef(panel)
+  panelRef.current = panel
+  const [openDoubt, setOpenDoubt] = useState<string | null>(null)
+  useEffect(() => {
+    if (!socket) return
+    const onAnswered = ({ id, title, by }: { id: string; title: string; by: string }) => {
+      if (panelRef.current !== 'doubts') setDoubtBadge(n => n + 1)
+      toast(`${by} answered your doubt "${title.length > 40 ? title.slice(0, 40) + '…' : title}"`, { label: 'Open', run: () => { setOpenDoubt(id); setPanel('doubts') } })
+    }
+    socket.on('doubt:answered', onAnswered)
+    return () => { socket.off('doubt:answered', onAnswered) }
+  }, [socket, toast])
+  useEffect(() => { if (panel === 'doubts') setDoubtBadge(0); else setOpenDoubt(null) }, [panel])
   const { totalUnread, openSignal } = useChat()
   // a notification or the Friends panel asked to open a chat
   useEffect(() => { if (openSignal) setPanel('chats') }, [openSignal])
@@ -78,6 +95,11 @@ function Room() {
         <TutorPanel onClose={close} />
       </Suspense>
     ),
+    doubts: (
+      <Suspense fallback={<div className="px-panel p-5">Opening the doubt board<span className="blink">…</span></div>}>
+        <DoubtsPanel onClose={close} openId={openDoubt} />
+      </Suspense>
+    ),
     pro: <ProPanel onClose={close} />,
     friends: <FriendsPanel onClose={close} openStreet={() => setPanel('street')} />,
     profile: <ProfilePanel onClose={close} />,
@@ -103,7 +125,7 @@ function Room() {
               )}
             </div>
             <div className="bg-black/35 px-1">
-              <Dock active={panel} onPick={toggle} onFocus={enterFocus} badges={{ chats: totalUnread }} />
+              <Dock active={panel} onPick={toggle} onFocus={enterFocus} badges={{ chats: totalUnread, doubts: doubtBadge }} />
             </div>
           </header>
 
@@ -176,6 +198,8 @@ export default function App() {
     return () => window.removeEventListener('lofi:unauthorized', loggedOut)
   }, [loggedOut])
 
+  // the link in "reset your password" emails: /reset-password#token=...
+  if (window.location.pathname === '/reset-password') return <ResetPassword onDone={s => { setState(s); setPhase('app') }} />
   if (phase === 'auth') return <AuthScreen onAuthed={s => { setState(s); setPhase('app') }} />
   // the checkout page lives at its own address: /checkout/<orderId>
   const checkoutId = window.location.pathname.match(/^\/checkout\/([A-Za-z0-9_-]+)\/?$/)?.[1]

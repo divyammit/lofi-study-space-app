@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useCall } from '../lib/call'
 import { useChat } from '../lib/chat'
 import { useStore } from '../lib/store'
@@ -8,7 +8,7 @@ import PixelIcon, { type IconName } from './PixelIcon'
 import SharedBoard from './SharedBoard'
 
 /** Shown on the call screen so you can confirm which version is deployed. */
-export const CALL_VERSION = 'calls v3'
+export const CALL_VERSION = 'calls v4'
 
 const STATE_LABEL: Partial<Record<RTCPeerConnectionState, string>> = {
   new: 'Connecting…',
@@ -17,37 +17,39 @@ const STATE_LABEL: Partial<Record<RTCPeerConnectionState, string>> = {
   failed: "Can't connect",
 }
 
-function Tile({ stream, muted, mirrored, name, avatar, showVideo, micOff, screen, compact, state }: {
-  stream: MediaStream | null; muted?: boolean; mirrored?: boolean; name: string; avatar: number
-  showVideo: boolean; micOff: boolean; screen?: boolean; compact?: boolean; state?: RTCPeerConnectionState
-}) {
-  const ref = useRef<HTMLVideoElement>(null)
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const [blocked, setBlocked] = useState(false)
-  useEffect(() => {
-    // Picture and sound go to separate players. A <video> with a camera track that sends no frames
-    // (camera off) never starts playing, which would also silence the audio in it.
-    const v = ref.current
-    if (v) {
-      const vt = stream?.getVideoTracks() ?? []
-      const vs = vt.length ? new MediaStream(vt) : null
-      v.srcObject = vs
-      if (vs) v.play().catch(() => {})
-    }
-    const a = audioRef.current
-    if (a && !muted) {
-      const at = stream?.getAudioTracks() ?? []
-      const as = at.length ? new MediaStream(at) : null
-      a.srcObject = as
-      // browsers may refuse to start sound without a click; then we show a "tap to hear" button
-      if (as) a.play().then(() => setBlocked(false), () => setBlocked(true))
-    }
-  }, [stream, muted])
-  const unblock = () => { audioRef.current?.play().then(() => setBlocked(false), () => {}) }
-  const label = state ? STATE_LABEL[state] : undefined
+/** Five little bars that light up with someone's voice level (0..1). */
+function Meter({ level, title }: { level: number; title: string }) {
+  // audio levels are tiny for normal speech, so use a curved scale
+  const lit = Math.min(5, Math.round(Math.sqrt(Math.max(0, level)) * 9))
   return (
-    <div className={`relative overflow-hidden bg-[#141626] ${compact ? 'aspect-video' : 'aspect-video min-h-0'}`}>
-      {!muted && <audio ref={audioRef} autoPlay />}
+    <span className="flex h-3 shrink-0 items-end gap-[2px]" title={title} aria-label={title} role="img">
+      {[1, 2, 3, 4, 5].map(i => (
+        <span key={i} className={i <= lit ? 'bg-moss' : 'bg-white/25'} style={{ width: 3, height: 3 + i * 2 }} />
+      ))}
+    </span>
+  )
+}
+
+function Tile({ stream, mirrored, name, avatar, showVideo, micOff, screen, compact, state, level, hearing, me }: {
+  stream: MediaStream | null; mirrored?: boolean; name: string; avatar: number
+  showVideo: boolean; micOff: boolean; screen?: boolean; compact?: boolean; state?: RTCPeerConnectionState
+  level: number; hearing?: boolean; me?: boolean
+}) {
+  // Tiles only show pictures. Everyone's sound plays from separate players managed in lib/call.tsx.
+  const ref = useRef<HTMLVideoElement>(null)
+  useEffect(() => {
+    const v = ref.current
+    if (!v) return
+    const vt = stream?.getVideoTracks() ?? []
+    const vs = vt.length ? new MediaStream(vt) : null
+    v.srcObject = vs
+    if (vs) v.play().catch(() => {})
+  }, [stream])
+  const label = state ? STATE_LABEL[state] : undefined
+  // connected, their mic is on, but no sound packets are coming in
+  const silent = !me && state === 'connected' && !micOff && hearing === false
+  return (
+    <div className={`relative overflow-hidden bg-[#141626] ${compact ? 'aspect-video' : 'aspect-video min-h-0'} ${level > 0.02 && !micOff ? 'outline-2 outline-moss -outline-offset-2' : ''}`}>
       <video
         ref={ref}
         autoPlay
@@ -64,14 +66,14 @@ function Tile({ stream, muted, mirrored, name, avatar, showVideo, micOff, screen
       {label && (
         <div className={`absolute inset-x-0 top-0 px-2 py-0.5 text-center text-[15px] ${state === 'failed' ? 'bg-rose text-white' : 'bg-black/60 text-[#ece3d0]'}`}>{label}</div>
       )}
-      {blocked && (
-        <button className="absolute inset-0 flex items-center justify-center bg-black/60 text-[18px] text-[#ece3d0]" onClick={unblock}>
-          Tap to hear {name}
-        </button>
+      {silent && !compact && (
+        <div className="absolute inset-x-0 top-0 bg-black/60 px-2 py-0.5 text-center text-[14px] text-[#ece3d0]">No sound arriving from {name}</div>
       )}
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-black/50 px-2 text-[17px] text-[#ece3d0]">
         <span className="truncate">{name}{screen ? ' · sharing screen' : ''}</span>
-        {micOff && <PixelIcon name="micOff" size={14} className="shrink-0 text-[#e8707e]" title="Muted" />}
+        {micOff
+          ? <PixelIcon name="micOff" size={14} className="shrink-0 text-[#e8707e]" title="Muted" />
+          : <Meter level={level} title={me ? 'Your microphone level' : `${name}'s sound level`} />}
       </div>
     </div>
   )
@@ -94,15 +96,6 @@ function CtrlButton({ icon, label, onClick, active = false, danger = false }: { 
 
 export default function CallView() {
   const c = useCall()
-  const inCall = !!c.call
-  // if a browser blocked sound from starting, start it on the next click or key press anywhere
-  useEffect(() => {
-    if (!inCall) return
-    const retry = () => document.querySelectorAll('audio').forEach(a => { if (a.paused && a.srcObject) a.play().catch(() => {}) })
-    document.addEventListener('pointerdown', retry, true)
-    document.addEventListener('keydown', retry, true)
-    return () => { document.removeEventListener('pointerdown', retry, true); document.removeEventListener('keydown', retry, true) }
-  }, [inCall])
   const { chats, chatTitle } = useChat()
   const { profile, now, whiteboard, rooms } = useStore()
   if (!c.call) return null
@@ -119,7 +112,8 @@ export default function CallView() {
     <>
       <Tile
         stream={c.localStream}
-        muted
+        me
+        level={c.levels.me ?? 0}
         mirrored={c.camOn && !c.screenOn}
         name={`${profile.name || 'You'} (you)`}
         avatar={profile.avatar}
@@ -139,6 +133,8 @@ export default function CallView() {
           screen={p.screen}
           compact={compact}
           state={c.peerStates[p.socketId] ?? 'new'}
+          level={c.levels[p.socketId] ?? 0}
+          hearing={c.hearing[p.socketId]}
         />
       ))}
     </>
@@ -150,6 +146,7 @@ export default function CallView() {
       <CtrlButton icon={c.camOn ? 'video' : 'videoOff'} label={c.camOn ? 'Camera off' : 'Camera on'} onClick={() => void c.toggleCam()} active={c.camOn} />
       {c.canShareScreen && <CtrlButton icon="screen" label={c.screenOn ? 'Stop sharing' : 'Share screen'} onClick={() => void c.toggleScreen()} active={!c.screenOn} />}
       <CtrlButton icon="board" label={c.board ? 'Close board' : 'Whiteboard'} onClick={() => (c.board ? c.closeBoard() : c.openBoard(whiteboard))} active={!c.board} />
+      {c.participants.length > 0 && <CtrlButton icon="volume" label="Fix sound" onClick={c.fixSound} active />}
       <CtrlButton icon="hangup" label="Leave" onClick={c.leave} danger />
     </div>
   )
@@ -157,8 +154,9 @@ export default function CallView() {
   if (!c.expanded) {
     return (
       <>
-        {/* keep everyone's audio playing while minimised */}
-        <div className="pointer-events-none fixed top-0 left-0 h-px w-px overflow-hidden opacity-0" aria-hidden="true">{tiles(true)}</div>
+        {c.audioBlocked && (
+          <button className="px-panel fixed right-3 bottom-28 z-40 bg-amber px-3 py-2 text-ink" onClick={c.unlockAudio}>Tap to hear the call</button>
+        )}
         <div className="px-panel panel-in fixed right-3 bottom-14 z-40 flex items-center gap-2 p-2" role="region" aria-label="Ongoing call">
           <button className="flex min-w-0 items-center gap-2 px-1 text-left hover:text-amber" onClick={() => c.setExpanded(true)} aria-label="Open call">
             <span className="blink text-moss">●</span>
@@ -197,6 +195,11 @@ export default function CallView() {
           <div className={`px-scroll grid min-h-0 flex-1 content-center gap-2 overflow-auto ${cols}`}>{tiles(false)}</div>
         )}
 
+        {c.audioBlocked && (
+          <button className="border-2 border-amber bg-amber px-3 py-2 text-[18px] text-ink" onClick={c.unlockAudio}>
+            Your browser paused the call sound. Tap here to hear everyone.
+          </button>
+        )}
         {c.participants.length === 0 && !c.board && (
           <p className="text-center text-muted">{room ? 'Waiting for others in the room to join the call.' : 'Waiting for others to join. Everyone in the chat got a notification.'}</p>
         )}

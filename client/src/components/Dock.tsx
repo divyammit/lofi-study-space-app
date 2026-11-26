@@ -7,6 +7,7 @@ const ITEMS: { id: PanelId; icon: IconName; label: string }[] = [
   { id: 'notes', icon: 'notes', label: 'Notes' },
   { id: 'board', icon: 'board', label: 'Whiteboard' },
   { id: 'tutor', icon: 'tutor', label: 'Study tutor' },
+  { id: 'doubts', icon: 'doubt', label: 'Doubt board' },
   { id: 'sounds', icon: 'sounds', label: 'Sounds' },
   { id: 'stats', icon: 'stats', label: 'Analytics' },
   { id: 'street', icon: 'street', label: 'Study street' },

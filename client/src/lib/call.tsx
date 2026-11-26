@@ -31,6 +31,16 @@ interface CallStore {
   /** connection state per remote person: 'new' | 'connecting' | 'connected' | 'failed' ... */
   peerStates: Record<string, RTCPeerConnectionState>
   relayAvailable: boolean
+  /** live sound levels (0..1) measured from the connections: per remote socket id, plus 'me' for your mic */
+  levels: Record<string, number>
+  /** remote people whose sound packets are actually arriving */
+  hearing: Record<string, boolean>
+  /** the browser refused to start playing call sound until the user taps something */
+  audioBlocked: boolean
+  /** start every paused call sound (call from a click/tap) */
+  unlockAudio: () => void
+  /** rebuild every sound player; can kick phones into the right speaker */
+  fixSound: () => void
   join: (key: string, video: boolean) => Promise<void>
   leave: () => void
   toggleMic: () => void
@@ -69,6 +79,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [board, setBoard] = useState<BoardState | null>(null)
   const [peerStates, setPeerStates] = useState<Record<string, RTCPeerConnectionState>>({})
   const [relayAvailable, setRelayAvailable] = useState(false)
+  const [levels, setLevels] = useState<Record<string, number>>({})
+  const [hearing, setHearing] = useState<Record<string, boolean>>({})
+  const [audioBlocked, setAudioBlocked] = useState(false)
 
   const callRef = useRef<ActiveCall | null>(null)
   callRef.current = call
@@ -112,14 +125,82 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  // ----- call sound -----
+  // Each remote person's voice plays through its own hidden <audio> element that lives directly in
+  // <body>, completely separate from the video tiles. That way sound never depends on whether
+  // anyone has a camera on, whether the call window is open or minimised, or how React redraws.
+  const sinks = useRef(new Map<string, HTMLAudioElement>())
+  const blockedSet = useRef(new Set<string>())
+  const sinkHolder = () => {
+    let h = document.getElementById('lofi-call-audio')
+    if (!h) {
+      h = document.createElement('div')
+      h.id = 'lofi-call-audio'
+      h.setAttribute('aria-hidden', 'true')
+      h.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none'
+      document.body.appendChild(h)
+    }
+    return h
+  }
+  const playSink = useCallback((id: string, el: HTMLAudioElement) => {
+    if (!el.srcObject) return
+    el.muted = false
+    el.volume = 1
+    el.play().then(
+      () => { blockedSet.current.delete(id); setAudioBlocked(blockedSet.current.size > 0) },
+      (e: unknown) => {
+        // NotAllowedError = autoplay policy; anything else (AbortError) is a harmless interruption
+        if (e instanceof DOMException && e.name === 'NotAllowedError') { blockedSet.current.add(id); setAudioBlocked(true) }
+      },
+    )
+  }, [])
+  const attachAudio = useCallback((id: string, track: MediaStreamTrack) => {
+    let el = sinks.current.get(id)
+    if (!el) {
+      el = document.createElement('audio')
+      el.autoplay = true
+      el.setAttribute('playsinline', '')
+      el.dataset.peer = id
+      sinkHolder().appendChild(el)
+      sinks.current.set(id, el)
+    }
+    const cur = (el.srcObject as MediaStream | null)?.getAudioTracks()[0]
+    if (cur !== track) el.srcObject = new MediaStream([track])
+    const sink = el
+    // a remote track starts "muted" until the first packets arrive, then plays
+    track.onunmute = () => playSink(id, sink)
+    playSink(id, el)
+  }, [playSink])
+  const removeAudio = useCallback((id: string) => {
+    const el = sinks.current.get(id)
+    if (el) { el.pause(); el.srcObject = null; el.remove() }
+    sinks.current.delete(id)
+    blockedSet.current.delete(id)
+    setAudioBlocked(blockedSet.current.size > 0)
+  }, [])
+  const unlockAudio = useCallback(() => {
+    for (const [id, el] of sinks.current) if (el.paused) playSink(id, el)
+  }, [playSink])
+  const fixSound = useCallback(() => {
+    for (const [id, el] of sinks.current) {
+      const st = el.srcObject as MediaStream | null
+      const t = st?.getAudioTracks()[0]
+      el.pause()
+      el.srcObject = null
+      if (t) { el.srcObject = new MediaStream([t]); playSink(id, el) }
+    }
+    toast('Restarted call sound. Still silent? Check your volume, or try headphones.')
+  }, [playSink, toast])
+
   const dropPeer = useCallback((id: string) => {
+    removeAudio(id)
     peers.current.get(id)?.close()
     peers.current.delete(id)
     pendingIce.current.delete(id)
     chains.current.delete(id)
     setRemoteStreams(s => { const n = { ...s }; delete n[id]; return n })
     setPeerStates(s => { const n = { ...s }; delete n[id]; return n })
-  }, [])
+  }, [removeAudio])
 
   const makePeer = useCallback((remoteId: string) => {
     // debugging aid: localStorage.setItem('lofi:forceRelay', '1') forces calls through the TURN relay
@@ -127,9 +208,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const pc = new RTCPeerConnection({ iceServers: iceServers.current ?? [], iceTransportPolicy: forceRelay ? 'relay' : 'all' })
     peers.current.set(remoteId, pc)
     pc.onicecandidate = e => { if (e.candidate) signal(remoteId, { candidate: e.candidate.toJSON() }) }
-    pc.ontrack = () => {
-      const tracks = pc.getReceivers().map(r => r.track).filter(Boolean)
-      setRemoteStreams(s => ({ ...s, [remoteId]: new MediaStream(tracks) }))
+    pc.ontrack = e => {
+      // sound goes to its own player; the stream given to the tile only carries the picture
+      if (e.track.kind === 'audio') attachAudio(remoteId, e.track)
+      const vids = pc.getReceivers().map(r => r.track).filter(t => t?.kind === 'video')
+      setRemoteStreams(s => ({ ...s, [remoteId]: new MediaStream(vids) }))
     }
     let restarted = false
     let gaveUp = false
@@ -161,7 +244,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
       if (st === 'failed') { clearTimeout(timer); giveUp() }
     }
     return pc
-  }, [signal, toast])
+  }, [signal, toast, attachAudio])
 
   const initiatorRef = useRef(new Set<string>()) // peers we sent the first offer to
   const relayRef = useRef(false)
@@ -223,6 +306,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setCamOn(false)
     setMicOn(true)
     setPeerStates({})
+    setLevels({})
+    setHearing({})
     initiatorRef.current.clear()
   }, [dropPeer])
 
@@ -400,15 +485,63 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
   }, [socket, account.id, handleSignal, dropPeer, cleanup, toast, join, openChat, chatTitle, settings.chime])
 
+  // Measure sound from the connection stats twice a second. This shows whether someone's voice is
+  // really arriving (so "can't hear" can be told apart from "nothing is being received").
+  const inCall = !!call
+  useEffect(() => {
+    if (!inCall) return
+    const lastBytes = new Map<string, { bytes: number; at: number }>()
+    let stop = false
+    const tick = async () => {
+      const lv: Record<string, number> = {}
+      const hr: Record<string, boolean> = {}
+      let mine = 0
+      for (const [id, pc] of peers.current) {
+        try {
+          const stats = await pc.getStats()
+          stats.forEach((r: Record<string, unknown>) => {
+            if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+              const bytes = Number(r.bytesReceived ?? 0)
+              const prev = lastBytes.get(id)
+              hr[id] = !!prev && bytes > prev.bytes
+              lastBytes.set(id, { bytes, at: Date.now() })
+              if (typeof r.audioLevel === 'number') lv[id] = r.audioLevel
+            }
+            if (r.type === 'media-source' && r.kind === 'audio' && typeof r.audioLevel === 'number') mine = Math.max(mine, r.audioLevel)
+          })
+        } catch { /* connection closing */ }
+      }
+      if (stop) return
+      lv.me = audioTrack.current?.enabled ? mine : 0
+      setLevels(lv)
+      setHearing(hr)
+    }
+    const iv = window.setInterval(() => { void tick() }, 500)
+    return () => { stop = true; clearInterval(iv) }
+  }, [inCall])
+
+  // browsers may refuse to start sound without a tap; start it on the next tap or key press anywhere
+  useEffect(() => {
+    if (!inCall) return
+    const go = () => unlockAudio()
+    for (const ev of ['pointerdown', 'touchend', 'keydown']) document.addEventListener(ev, go, true)
+    return () => { for (const ev of ['pointerdown', 'touchend', 'keydown']) document.removeEventListener(ev, go, true) }
+  }, [inCall, unlockAudio])
+
   // leaving a study room (or it closing) ends that room's call for us
   useEffect(() => {
     if (call?.key.startsWith('room:') && myRoom?.id !== call.key.slice(5)) cleanup()
   }, [call, myRoom, cleanup])
 
-  useEffect(() => () => { for (const pc of peers.current.values()) pc.close(); [audioTrack, camTrack, screenTrack].forEach(r => r.current?.stop()) }, [])
+  useEffect(() => () => {
+    for (const pc of peers.current.values()) pc.close()
+    for (const el of sinks.current.values()) { el.pause(); el.srcObject = null; el.remove() }
+    ;[audioTrack, camTrack, screenTrack].forEach(r => r.current?.stop())
+  }, [])
 
   const value: CallStore = {
     call, joining, participants, remoteStreams, localStream, micOn, camOn, screenOn, canShareScreen, expanded, setExpanded, peerStates, relayAvailable,
+    levels, hearing, audioBlocked, unlockAudio, fixSound,
     join, leave, toggleMic, toggleCam, toggleScreen, board, openBoard, closeBoard, clearBoard, sendStroke, onStrokes,
   }
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

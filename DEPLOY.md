@@ -87,6 +87,7 @@ If you later change an existing column, write an `ALTER TABLE` statement in `sch
 ## 5. Checking it works
 
 - `https://<your-service>.onrender.com/api/health` should return `{"ok":true}`.
+- In a call, the top bar shows the version (`calls v4`). If it shows an older one, the new code isn't live yet: check the latest deploy on Render, then hard-refresh (Ctrl+Shift+R / Cmd+Shift+R).
 - Sign up in one browser and again in an incognito window, add each other as friends,
   and open a room: the second window should see it appear without refreshing.
 - In Neon's **SQL Editor** you can inspect the data, e.g.
@@ -192,6 +193,44 @@ video uses several hundred MB per person per hour. These are rough estimates. Fo
 is usually plenty, but keep an eye on the provider's usage page.
 
 Calls also need **https** (browsers only allow microphone and camera on secure sites). Render gives you https automatically.
+
+### "I can't hear them" checklist
+
+Every tile in a call has a little 5-bar sound meter. It shows what the connection actually receives,
+so it tells you where the problem is:
+
+| What you see | Meaning | Fix |
+|---|---|---|
+| Their bars move, you hear nothing | Sound arrives but your device isn't playing it | Tap the orange "Tap here to hear everyone" bar if shown; press **Fix sound**; turn up the volume. On phones, try headphones (iPhones can route call audio to the quiet earpiece). |
+| Their bars never move, their mic icon isn't crossed out | Their microphone isn't sending | They should check the mic permission in the address bar, and that their own tile's meter moves when they talk |
+| "No sound arriving from ..." on their tile | Connected, but no audio packets | Usually a blocked network: add a TURN relay (above) |
+| "Can't connect" | The connection itself failed | TURN relay (above), or try another network |
+
+## Password reset emails (Forgot password)
+
+Render's free plan blocks normal email (SMTP) ports, so the app sends email through **Brevo's HTTPS API**,
+which works there. Brevo's free plan allows 300 emails a day, with no card.
+
+1. Sign up at **brevo.com** (free).
+2. **Senders, Domains & Dedicated IPs → Senders → Add a sender**: add the address emails should come from
+   (your Gmail is fine) and click the confirmation link Brevo emails you.
+3. **SMTP & API → API Keys → Generate a new API key**. Copy it.
+4. On Render → **Environment**, add:
+
+| Key | Value |
+|---|---|
+| `BREVO_API_KEY` | the API key from step 3 (starts with `xkeysib-`) |
+| `MAIL_FROM` | the sender address you verified in step 2 |
+| `MAIL_FROM_NAME` | optional, default `Lo-Fi Study Space` |
+| `APP_URL` | optional: your site address. On Render it's detected automatically. |
+
+5. **Save, rebuild, and deploy.** The log should say `[mail] Emails sent through Brevo from ...`.
+
+Test it: log out → **Forgot password?** → enter your username. The email arrives in a minute
+(check Spam the first time; mail from a Gmail address sent through Brevo sometimes lands there).
+
+**Without Brevo** the feature still works for your team: the reset link is printed in Render's **Logs**
+(`[auth] Password reset link for @name ...`), and you can send it to the person yourself. Links expire after 30 minutes.
 
 ## AI study tutor
 
